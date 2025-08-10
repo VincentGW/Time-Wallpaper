@@ -35,10 +35,10 @@ TimeWallpaper automatically changes your desktop wallpaper based on real astrono
 
 Edit `config.ini` to customize:
 
-# Disable/enable auto-detection to use manual coordinates
-# Enter manual/backup coordinates (get from https://www.latlong.net/)
-# Update frequency (minutes)
-# Enable debug output
+- Disable/enable auto-detection to use manual coordinates
+- Enter manual/backup coordinates (get from https://www.latlong.net/)
+- Update frequency (minutes)
+- Enable debug output
 
 
 ## 🌅 Color Schedule
