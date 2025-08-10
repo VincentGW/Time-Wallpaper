@@ -59,7 +59,7 @@ Colors change based on your location's actual solar times:
 
 
 ## 📊 Sample Output
-
+```
 TimeWallpaper v2.0 - Solar Edition
 ===================================
 IP geolocation successful:
@@ -77,7 +77,7 @@ Wallpaper updated successfully!
 Current time: 7:12 AM
 Period: Sunrise
 Color: RGB(255, 229, 204)
-
+```
 
 ## 🌍 Seasonal Examples
 
