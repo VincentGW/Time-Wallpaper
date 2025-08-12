@@ -17,7 +17,7 @@ set CURRENT_DIR=%cd%
 echo Creating service wrapper...
 echo @echo off > TimeWallpaperService.bat
 echo cd /d "%CURRENT_DIR%" >> TimeWallpaperService.bat
-echo TimeWallpaper.exe -c >> TimeWallpaperService.bat
+echo TimeWallpaper.exe >> TimeWallpaperService.bat
 
 echo Installing Windows service...
 sc create "TimeWallpaper" binPath= "%CURRENT_DIR%\TimeWallpaperService.bat" start= auto DisplayName= "TimeWallpaper - Solar Edition"

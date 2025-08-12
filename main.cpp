@@ -574,34 +574,6 @@ public:
         return true;
     }
     
-    void runOnce() {
-        if (!fetchSolarTimes()) {
-            std::cout << "Warning: Using fallback solar times" << std::endl;
-        }
-        
-        generateTodaysColors();
-        
-        if (updateWallpaper()) {
-            time_t now = time(0);
-            tm* timeinfo = localtime(&now);
-            
-            Color currentColor = getCurrentColor();
-            std::string period = getCurrentPeriod();
-            
-            std::cout << "\nWallpaper updated successfully!" << std::endl;
-            std::cout << "Current time: " << formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0)) << std::endl;
-            std::cout << "Period: " << period << std::endl;
-            std::cout << "Color: RGB(" << currentColor.r << ", " << currentColor.g << ", " << currentColor.b << ")" << std::endl;
-            
-            if (todaysSolarTimes.valid) {
-                std::cout << "\nToday's solar times:" << std::endl;
-                std::cout << "  Sunrise: " << formatHour(todaysSolarTimes.sunrise_hour) << std::endl;
-                std::cout << "  Solar Noon: " << formatHour(todaysSolarTimes.solar_noon_hour) << std::endl;
-                std::cout << "  Sunset: " << formatHour(todaysSolarTimes.sunset_hour) << std::endl;
-                std::cout << "  Civil Twilight End: " << formatHour(todaysSolarTimes.civil_twilight_end) << std::endl;
-            }
-        }
-    }
     
     void runContinuous() {
         std::cout << "\nStarting continuous mode..." << std::endl;
@@ -658,19 +630,15 @@ int main(int argc, char* argv[]) {
     
     if (argc > 1) {
         std::string mode = argv[1];
-        if (mode == "--continuous" || mode == "-c") {
-            app.runContinuous();
-            return 0;
-        } else if (mode == "--help" || mode == "-h") {
+        if (mode == "--help" || mode == "-h") {
             std::cout << "\nUsage:" << std::endl;
-            std::cout << "  TimeWallpaper.exe           - Update wallpaper once" << std::endl;
-            std::cout << "  TimeWallpaper.exe -c        - Run continuously" << std::endl;
+            std::cout << "  TimeWallpaper.exe           - Run continuously" << std::endl;
             std::cout << "  TimeWallpaper.exe --help    - Show this help" << std::endl;
             std::cout << "\nEdit config.ini to set your location coordinates." << std::endl;
             return 0;
         }
     }
     
-    app.runOnce();
+    app.runContinuous();
     return 0;
 }

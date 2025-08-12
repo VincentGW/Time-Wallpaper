@@ -18,17 +18,11 @@ TimeWallpaper automatically changes your desktop wallpaper based on real astrono
 
 1. Compile: `compile.bat`
 
-2. Run Once (location auto-detected):
-   cmd
-   TimeWallpaper.exe
+2. Run Continuously:
+   cmd > TimeWallpaper.exe
    
-3. Run Continuously:
-   cmd
-   TimeWallpaper.exe -c
-   
-4. Install as Windows Service:
-   cmd
-   install_service.bat
+3. Install as Windows Service:
+   cmd > install_service.bat
 
 
 ## ⚙️ Optional Configuration
@@ -59,6 +53,7 @@ Colors change based on your location's actual solar times:
 
 
 ## 📊 Sample Output
+
 ```
 TimeWallpaper v2.0 - Solar Edition
 ===================================

@@ -17,8 +17,7 @@ if exist TimeWallpaper.exe (
     echo   • Continuous service mode
     echo.
     echo Usage:
-    echo   TimeWallpaper.exe       - Run once
-    echo   TimeWallpaper.exe -c    - Continuous mode
+    echo   TimeWallpaper.exe       - Run continuously
     echo.
     echo Location auto-detected! Edit config.ini to customize or set backup coordinates.
     echo.
