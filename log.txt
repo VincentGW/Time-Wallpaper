@@ -1,0 +1,42 @@
+
+[2025-08-14 21:04:37] Config loaded from config.ini
+[2025-08-14 21:04:37] Starting service mode...
+[2025-08-14 21:04:37] Auto-detecting location...
+[2025-08-14 21:04:37] Auto-detecting location...
+[2025-08-14 21:04:37] Trying IP geolocation...
+[2025-08-14 21:04:38] IP geolocation successful:
+[2025-08-14 21:04:38]   Location: Rochester, New York
+[2025-08-14 21:04:38]   Coordinates: 43.114000, -77.568900
+[2025-08-14 21:04:38] Location saved to config.ini
+[2025-08-14 21:04:38] Fetching solar times...
+[2025-08-14 21:04:38] Solar times fetched successfully:
+[2025-08-14 21:04:39]   Sunrise: 5:15 AM
+[2025-08-14 21:04:39]   Sunset: 7:14 PM
+[2025-08-14 21:04:39] Generated 19 color points for today
+[2025-08-14 21:04:39] [1] 9:03 PM | Early Evening | RGB(58, 44, 74)
+[2025-08-14 21:05:39] [2] 9:04 PM | Early Evening | RGB(57, 44, 74)
+[2025-08-14 21:06:39] [3] 9:06 PM | Early Evening | RGB(57, 43, 74)
+[2025-08-14 21:07:39] [4] 9:07 PM | Early Evening | RGB(57, 43, 74)
+[2025-08-14 21:08:40] [5] 9:07 PM | Early Evening | RGB(56, 42, 73)
+[2025-08-14 21:09:40] [6] 9:08 PM | Early Evening | RGB(56, 42, 73)
+[2025-08-14 21:10:40] [7] 9:10 PM | Early Evening | RGB(56, 41, 73)
+[2025-08-14 21:11:41] [8] 9:11 PM | Early Evening | RGB(55, 41, 73)
+[2025-08-14 21:12:41] [9] 9:11 PM | Early Evening | RGB(55, 40, 72)
+[2025-08-14 21:13:41] [10] 9:12 PM | Early Evening | RGB(55, 40, 72)
+[2025-08-14 21:14:42] [11] 9:14 PM | Early Evening | RGB(54, 39, 72)
+[2025-08-14 21:15:42] [12] 9:15 PM | Early Evening | RGB(54, 39, 72)
+[2025-08-14 21:16:42] [13] 9:15 PM | Early Evening | RGB(54, 38, 71)
+[2025-08-14 21:17:43] [14] 9:17 PM | Early Evening | RGB(53, 38, 71)
+[2025-08-14 21:18:43] [15] 9:18 PM | Early Evening | RGB(53, 37, 71)
+[2025-08-14 21:19:43] [16] 9:18 PM | Early Evening | RGB(53, 37, 71)
+[2025-08-14 21:20:43] [17] 9:19 PM | Early Evening | RGB(52, 36, 70)
+[2025-08-14 21:21:44] [18] 9:21 PM | Early Evening | RGB(52, 36, 70)
+[2025-08-14 21:22:44] [19] 9:22 PM | Early Evening | RGB(52, 35, 70)
+[2025-08-14 21:23:44] [20] 9:22 PM | Early Evening | RGB(51, 35, 70)
+[2025-08-14 21:24:44] [21] 9:23 PM | Early Evening | RGB(51, 34, 69)
+[2025-08-14 21:25:45] [22] 9:25 PM | Early Evening | RGB(51, 34, 69)
+[2025-08-14 21:26:45] [23] 9:26 PM | Early Evening | RGB(50, 33, 69)
+[2025-08-14 21:27:45] [24] 9:26 PM | Early Evening | RGB(50, 33, 69)
+[2025-08-14 21:28:45] [25] 9:27 PM | Early Evening | RGB(50, 32, 68)
+[2025-08-14 21:29:45] [26] 9:29 PM | Early Evening | RGB(49, 32, 68)
+[2025-08-14 21:30:46] [27] 9:30 PM | Early Evening | RGB(49, 31, 68)

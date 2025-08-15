@@ -1,7 +1,7 @@
 @echo off
 echo Compiling TimeWallpaper v2.0 - Solar Edition...
 
-g++ -std=c++17 main.cpp -o TimeWallpaper.exe -lgdi32 -luser32 -lwininet
+"C:\msys64\mingw64\bin\g++.exe" -std=c++17 main.cpp -o TimeWallpaper.exe -lgdi32 -luser32 -lwininet -mwindows
 
 if exist TimeWallpaper.exe (
     echo.

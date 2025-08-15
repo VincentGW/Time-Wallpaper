@@ -16,6 +16,11 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "ole32.lib")
 
+// Windows Service globals
+SERVICE_STATUS g_ServiceStatus = { 0 };
+SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
+HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+
 struct Color {
     int r, g, b;
     Color(int red = 0, int green = 0, int blue = 0) : r(red), g(green), b(blue) {}
@@ -68,16 +73,18 @@ public:
         
         loadConfig();
         
-        // Try to auto-detect location if enabled
-        if (config.auto_detect_location) {
+        // Don't auto-detect location in constructor for service mode - do it later in run()
+        if (config.auto_detect_location && !config.service_mode) {
             autoDetectLocation();
         }
         
-        std::cout << "TimeWallpaper v2.0 - Solar Edition" << std::endl;
-        std::cout << "===================================" << std::endl;
-        std::cout << "Location: " << config.location_name << " (" << config.latitude << ", " << config.longitude << ")" << std::endl;
-        std::cout << "Update interval: " << config.update_interval_minutes << " minute(s)" << std::endl;
-        std::cout << "Screen: " << screenWidth << "x" << screenHeight << std::endl;
+        if (!config.service_mode) {
+            logMessage("TimeWallpaper v2.0 - Solar Edition");
+            logMessage("===================================");
+            logMessage("Location: " + config.location_name + " (" + std::to_string(config.latitude) + ", " + std::to_string(config.longitude) + ")");
+            logMessage("Update interval: " + std::to_string(config.update_interval_minutes) + " minute(s)");
+            logMessage("Screen: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+        }
     }
     
     void loadConfig() {
@@ -108,7 +115,7 @@ public:
                 }
             }
             configFile.close();
-            if (config.debug_mode) std::cout << "Config loaded from config.ini" << std::endl;
+            if (config.debug_mode) logMessage("Config loaded from config.ini");
         } else {
             createDefaultConfig();
         }
@@ -131,7 +138,7 @@ public:
             configFile << "debug_mode=" << (config.debug_mode ? "true" : "false") << std::endl;
             configFile << "auto_detect_location=" << (config.auto_detect_location ? "true" : "false") << std::endl;
             configFile.close();
-            std::cout << "Created default config.ini - location will be auto-detected!" << std::endl;
+            logMessage("Created default config.ini - location will be auto-detected!");
         }
     }
     
@@ -166,17 +173,17 @@ public:
     }
     
     bool detectLocationFromIP() {
-        if (config.debug_mode) std::cout << "Trying IP geolocation..." << std::endl;
+        if (config.debug_mode) logMessage("Trying IP geolocation...");
         
         std::string response = httpGetWithTimeout("http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country", 8000);
         
         if (response.empty()) {
-            if (config.debug_mode) std::cout << "IP geolocation failed - no response" << std::endl;
+            if (config.debug_mode) logMessage("IP geolocation failed - no response");
             return false;
         }
         
         if (response.find("\"status\":\"success\"") == std::string::npos) {
-            if (config.debug_mode) std::cout << "IP geolocation failed - invalid response" << std::endl;
+            if (config.debug_mode) logMessage("IP geolocation failed - invalid response");
             return false;
         }
         
@@ -229,26 +236,26 @@ public:
             }
             
             if (config.debug_mode) {
-                std::cout << "IP geolocation successful:" << std::endl;
-                std::cout << "  Location: " << config.location_name << std::endl;
-                std::cout << "  Coordinates: " << config.latitude << ", " << config.longitude << std::endl;
+                logMessage("IP geolocation successful:");
+                logMessage("  Location: " + config.location_name);
+                logMessage("  Coordinates: " + std::to_string(config.latitude) + ", " + std::to_string(config.longitude));
             }
             
             return true;
             
         } catch (...) {
-            if (config.debug_mode) std::cout << "IP geolocation failed - parsing error" << std::endl;
+            if (config.debug_mode) logMessage("IP geolocation failed - parsing error");
             return false;
         }
     }
     
     bool autoDetectLocation() {
         if (!config.auto_detect_location) {
-            if (config.debug_mode) std::cout << "Auto-detection disabled in config" << std::endl;
+            if (config.debug_mode) logMessage("Auto-detection disabled in config");
             return false;
         }
         
-        if (config.debug_mode) std::cout << "Auto-detecting location..." << std::endl;
+        if (config.debug_mode) logMessage("Auto-detecting location...");
         
         // Try IP geolocation first (most reliable)
         if (detectLocationFromIP()) {
@@ -256,7 +263,7 @@ public:
             return true;
         }
         
-        if (config.debug_mode) std::cout << "All location detection methods failed" << std::endl;
+        if (config.debug_mode) logMessage("All location detection methods failed");
         return false;
     }
     
@@ -278,7 +285,7 @@ public:
             configFile << "auto_detect_location=" << (config.auto_detect_location ? "true" : "false") << std::endl;
             configFile.close();
             
-            if (config.debug_mode) std::cout << "Location saved to config.ini" << std::endl;
+            if (config.debug_mode) logMessage("Location saved to config.ini");
         }
     }
     
@@ -322,7 +329,7 @@ public:
     bool fetchSolarTimes(bool isRetry = false) {
         std::string today = getCurrentDate();
         if (todaysSolarTimes.valid && todaysSolarTimes.fetch_date == today) {
-            if (config.debug_mode) std::cout << "Using cached solar times for " << today << std::endl;
+            if (config.debug_mode) logMessage("Using cached solar times for " + today);
             return true;
         }
         
@@ -331,21 +338,21 @@ public:
                    << "&lng=" << config.longitude << "&formatted=0";
         
         std::string url = urlBuilder.str();
-        if (config.debug_mode) std::cout << "Fetching solar times..." << (isRetry ? " (retry)" : "") << std::endl;
+        if (config.debug_mode) logMessage("Fetching solar times..." + std::string(isRetry ? " (retry)" : ""));
         
         std::string response = httpGetWithTimeout(url, isRetry ? 10000 : 5000);
         
         if (response.empty()) {
             if (!isRetry) {
-                std::cout << "API request timed out, retrying once..." << std::endl;
+                logMessage("API request timed out, retrying once...");
                 return fetchSolarTimes(true);  // Retry once
             }
-            std::cout << "API Error: Request timed out. Using fallback times." << std::endl;
+            logMessage("API Error: Request timed out. Using fallback times.");
             return useFallbackSolarTimes();
         }
         
         if (response.find("\"status\":\"OK\"") == std::string::npos) {
-            std::cout << "API Error: Invalid response. Using fallback times." << std::endl;
+            logMessage("API Error: Invalid response. Using fallback times.");
             return useFallbackSolarTimes();
         }
         
@@ -361,15 +368,15 @@ public:
                 todaysSolarTimes.fetch_date = today;
                 
                 if (config.debug_mode) {
-                    std::cout << "Solar times fetched successfully:" << std::endl;
-                    std::cout << "  Sunrise: " << formatHour(todaysSolarTimes.sunrise_hour) << std::endl;
-                    std::cout << "  Sunset: " << formatHour(todaysSolarTimes.sunset_hour) << std::endl;
+                    logMessage("Solar times fetched successfully:");
+                    logMessage("  Sunrise: " + formatHour(todaysSolarTimes.sunrise_hour));
+                    logMessage("  Sunset: " + formatHour(todaysSolarTimes.sunset_hour));
                 }
                 
                 return true;
             }
         } catch (...) {
-            std::cout << "JSON parsing error. Using fallback times." << std::endl;
+            logMessage("JSON parsing error. Using fallback times.");
         }
         
         return useFallbackSolarTimes();
@@ -384,7 +391,7 @@ public:
         todaysSolarTimes.valid = false;
         todaysSolarTimes.fetch_date = getCurrentDate();
         
-        std::cout << "Using fallback solar times (NYC January average)" << std::endl;
+        logMessage("Using fallback solar times (NYC January average)");
         return false;
     }
     
@@ -443,7 +450,7 @@ public:
         todaysColors = points;
         
         if (config.debug_mode) {
-            std::cout << "Generated " << todaysColors.size() << " color points for today" << std::endl;
+            logMessage("Generated " + std::to_string(todaysColors.size()) + " color points for today");
         }
     }
     
@@ -562,25 +569,33 @@ public:
         Color currentColor = getCurrentColor();
         
         if (!createSolidColorBitmap(currentColor)) {
-            std::cerr << "Failed to create wallpaper bitmap" << std::endl;
+            logMessage("Failed to create wallpaper bitmap");
             return false;
         }
         
         if (!setWallpaper()) {
-            std::cerr << "Failed to set wallpaper" << std::endl;
+            logMessage("Failed to set wallpaper");
             return false;
         }
         
         return true;
     }
     
-    
-    void runContinuous() {
-        std::cout << "\nStarting continuous mode..." << std::endl;
-        std::cout << "Wallpaper will update every " << config.update_interval_minutes << " minute(s)" << std::endl;
-        std::cout << "Press Ctrl+C to stop" << std::endl;
+    void run() {
+        if (config.service_mode) {
+            logMessage("Starting service mode...");
+        } else {
+            logMessage("Starting TimeWallpaper...");
+            logMessage("Wallpaper will update every " + std::to_string(config.update_interval_minutes) + " minute(s)");
+        }
         
         // Initial setup
+        // Do location detection for service mode here (after service is marked as running)
+        if (config.service_mode && config.auto_detect_location) {
+            logMessage("Auto-detecting location...");
+            autoDetectLocation();
+        }
+        
         fetchSolarTimes();
         generateTodaysColors();
         
@@ -588,11 +603,19 @@ public:
         std::string lastDate = getCurrentDate();
         
         while (true) {
+            // Check if service is being stopped
+            if (config.service_mode && g_ServiceStopEvent != INVALID_HANDLE_VALUE) {
+                if (WaitForSingleObject(g_ServiceStopEvent, 0) == WAIT_OBJECT_0) {
+                    logMessage("Service stop event received, exiting...");
+                    break;
+                }
+            }
+            
             try {
                 // Check if we need to refresh solar times (new day)
                 std::string currentDate = getCurrentDate();
                 if (currentDate != lastDate) {
-                    std::cout << "\nNew day detected, refreshing solar times..." << std::endl;
+                    logMessage("New day detected, refreshing solar times...");
                     fetchSolarTimes();
                     generateTodaysColors();
                     lastDate = currentDate;
@@ -601,16 +624,20 @@ public:
                 if (updateWallpaper()) {
                     updateCount++;
                     
-                    if (config.debug_mode || updateCount % 10 == 1) { // Show status every 10 updates
+                    if (config.debug_mode || updateCount % 1 == 0) { // Show status updates
                         time_t now = time(0);
                         tm* timeinfo = localtime(&now);
                         Color currentColor = getCurrentColor();
                         std::string period = getCurrentPeriod();
                         
-                        std::cout << "\n[" << updateCount << "] " 
-                                  << formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0))
-                                  << " | " << period 
-                                  << " | RGB(" << currentColor.r << ", " << currentColor.g << ", " << currentColor.b << ")" << std::endl;
+                        std::string statusMsg = "[" + std::to_string(updateCount) + "] " 
+                                               + formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0))
+                                               + " | " + period 
+                                               + " | RGB(" + std::to_string(currentColor.r) + ", " 
+                                               + std::to_string(currentColor.g) + ", " 
+                                               + std::to_string(currentColor.b) + ")";
+                        
+                        logMessage(statusMsg);
                     }
                 }
                 
@@ -618,27 +645,188 @@ public:
                 std::this_thread::sleep_for(std::chrono::minutes(config.update_interval_minutes));
                 
             } catch (const std::exception& e) {
-                std::cerr << "Error in continuous loop: " << e.what() << std::endl;
+                std::string errorMsg = "Error in main loop: " + std::string(e.what());
+                logMessage(errorMsg);
                 std::this_thread::sleep_for(std::chrono::minutes(1));
             }
         }
     }
+
+    void logMessage(const std::string& message) {
+        // Get the directory where the executable is located
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        std::string exeDir = std::string(exePath);
+        size_t lastSlash = exeDir.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            exeDir = exeDir.substr(0, lastSlash + 1);
+        } else {
+            exeDir = "";
+        }
+        
+        std::string logPath = exeDir + "log.txt";
+        std::ofstream logFile(logPath, std::ios::app);
+        if (logFile.is_open()) {
+            time_t now = time(0);
+            tm* timeinfo = localtime(&now);
+            
+            char timestamp[100];
+            strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo);
+            
+            logFile << "[" << timestamp << "] " << message << std::endl;
+            logFile.close();
+        }
+    }
+
+    void setServiceMode(bool enabled) {
+        config.service_mode = enabled;
+    }
 };
 
+// Global app instance for service
+TimeWallpaper* g_AppInstance = nullptr;
+
+VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv);
+VOID WINAPI ServiceCtrlHandler(DWORD);
+DWORD WINAPI ServiceWorkerThread(LPVOID lpParam);
+
+VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
+    DWORD Status = E_FAIL;
+
+    g_StatusHandle = RegisterServiceCtrlHandlerA("TimeWallpaper", ServiceCtrlHandler);
+
+    if (g_StatusHandle == NULL) {
+        return;
+    }
+
+    ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
+    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_ServiceStatus.dwControlsAccepted = 0;
+    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_ServiceStatus.dwWin32ExitCode = 0;
+    g_ServiceStatus.dwServiceSpecificExitCode = 0;
+    g_ServiceStatus.dwCheckPoint = 0;
+
+    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
+        return;
+    }
+
+    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (g_ServiceStopEvent == NULL) {
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = GetLastError();
+        g_ServiceStatus.dwCheckPoint = 1;
+
+        if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
+            return;
+        }
+        return;
+    }
+
+    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+    g_ServiceStatus.dwWin32ExitCode = 0;
+    g_ServiceStatus.dwCheckPoint = 0;
+
+    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
+        return;
+    }
+
+    HANDLE hThread = CreateThread(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
+
+    WaitForSingleObject(hThread, INFINITE);
+
+    CloseHandle(g_ServiceStopEvent);
+
+    g_ServiceStatus.dwControlsAccepted = 0;
+    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+    g_ServiceStatus.dwWin32ExitCode = 0;
+    g_ServiceStatus.dwCheckPoint = 3;
+
+    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
+        return;
+    }
+}
+
+VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
+    switch (CtrlCode) {
+    case SERVICE_CONTROL_STOP:
+
+        if (g_ServiceStatus.dwCurrentState != SERVICE_RUNNING)
+            break;
+
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+        g_ServiceStatus.dwWin32ExitCode = 0;
+        g_ServiceStatus.dwCheckPoint = 4;
+
+        if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
+            return;
+        }
+
+        SetEvent(g_ServiceStopEvent);
+        break;
+
+    default:
+        break;
+    }
+}
+
+DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
+    if (g_AppInstance) {
+        try {
+            g_AppInstance->run();
+        } catch (...) {
+            // Log any exceptions and set service to stopped
+            g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+            g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+            g_ServiceStatus.dwServiceSpecificExitCode = 1;
+            SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        }
+    }
+    return ERROR_SUCCESS;
+}
+
 int main(int argc, char* argv[]) {
+    if (argc > 1) {
+        std::string mode = argv[1];
+        if (mode == "--service" || mode == "-s") {
+            // Running as Windows Service
+            SERVICE_TABLE_ENTRY ServiceTable[] = {
+                {(LPSTR)"TimeWallpaper", (LPSERVICE_MAIN_FUNCTION)ServiceMain},
+                {NULL, NULL}
+            };
+
+            // Create app instance with service mode enabled  
+            TimeWallpaper app;
+            g_AppInstance = &app;
+            g_AppInstance->setServiceMode(true);
+
+            if (StartServiceCtrlDispatcher(ServiceTable) == FALSE) {
+                return GetLastError();
+            }
+            return 0;
+        }
+    }
+
+    // Regular application mode
     TimeWallpaper app;
     
     if (argc > 1) {
         std::string mode = argv[1];
         if (mode == "--help" || mode == "-h") {
             std::cout << "\nUsage:" << std::endl;
-            std::cout << "  TimeWallpaper.exe           - Run continuously" << std::endl;
-            std::cout << "  TimeWallpaper.exe --help    - Show this help" << std::endl;
-            std::cout << "\nEdit config.ini to set your location coordinates." << std::endl;
+            std::cout << "  TimeWallpaper.exe              - Updates wallpaper colors throughout the day (runs silently)" << std::endl;
+            std::cout << "  TimeWallpaper.exe --service    - Run as Windows Service (used by service manager)" << std::endl;
+            std::cout << "  TimeWallpaper.exe --help       - Show this help" << std::endl;
+            std::cout << "\nAll output is logged to log.txt file." << std::endl;
+            std::cout << "Edit config.ini to set your location coordinates." << std::endl;
+            std::cout << "\nTo install as Windows Service, run install_service.bat as administrator." << std::endl;
             return 0;
         }
     }
     
-    app.runContinuous();
+    app.run();
     return 0;
 }

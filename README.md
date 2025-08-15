@@ -2,7 +2,6 @@
 
 TimeWallpaper automatically changes your desktop wallpaper based on real astronomical data for your location.
 
-
 ## 🌟 Key Features
 
 ### Real Astronomical Data
@@ -13,17 +12,19 @@ TimeWallpaper automatically changes your desktop wallpaper based on real astrono
 - Daily Updates: Automatically fetches fresh solar data each day
 - Backup Coordinates: Manual coordinates serve as fallback if detection fails
 
-
 ## 🚀 Quick Start
 
-1. Compile: `compile.bat`
+A. Auto-Start with Windows (Recommended):
+   '''
+   cmd > install_startup.bat
+   '''
+   This adds TimeWallpaper to your Windows startup folder so it runs automatically when you log in.
 
-2. Run Continuously:
+B. Run Manually:
+   ```
    cmd > TimeWallpaper.exe
-   
-3. Install as Windows Service:
-   cmd > install_service.bat
-
+   ```
+   Runs continuously until you close it.
 
 ## ⚙️ Optional Configuration
 
@@ -34,6 +35,26 @@ Edit `config.ini` to customize:
 - Update frequency (minutes)
 - Enable debug output
 
+## 🔧 Startup
+
+To Install Auto-Start:
+```cmd
+install_startup.bat
+```
+
+To Remove Auto-Start:
+Delete this file:
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TimeWallpaper_Startup.bat
+```
+
+Check if Running:
+- Look for `TimeWallpaper.exe` in Task Manager
+- Wallpaper should change colors gradually throughout the day
+
+Files Created:
+- `start_timewallpaper.bat` - Startup script that launches in background
+- Startup shortcut in Windows startup folder
 
 ## 🌅 Color Schedule
 
@@ -50,7 +71,6 @@ Colors change based on your location's actual solar times:
 - Civil Twilight → Dark slate purple
 - Evening → Deep purple
 - Night → Nearly black
-
 
 ## 📊 Sample Output
 
@@ -73,15 +93,3 @@ Current time: 7:12 AM
 Period: Sunrise
 Color: RGB(255, 229, 204)
 ```
-
-## 🌍 Seasonal Examples
-
-New York City:
-- Winter: Sunrise ~7:12 AM, Sunset ~5:06 PM
-- Summer: Sunrise ~5:30 AM, Sunset ~8:00 PM
-
-London:  
-- Winter: Sunrise ~8:00 AM, Sunset ~4:00 PM
-- Summer: Sunrise ~4:45 AM, Sunset ~9:20 PM
-
-Colors automatically adapt to your location's natural light cycle!
