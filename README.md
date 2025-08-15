@@ -42,8 +42,7 @@ To Install Auto-Start:
 install_startup.bat
 ```
 
-To Remove Auto-Start:
-Delete this file:
+To Remove Auto-Start, delete this file:
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TimeWallpaper_Startup.bat
 ```
