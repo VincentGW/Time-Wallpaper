@@ -87,8 +87,33 @@ public:
         }
     }
     
+    std::string getConfigPath() {
+        // Get the directory where the executable is located
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        std::string exeDir = std::string(exePath);
+        size_t lastSlash = exeDir.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            exeDir = exeDir.substr(0, lastSlash + 1);
+        } else {
+            exeDir = "";
+        }
+        
+        // Go up one directory level
+        size_t parentSlash = exeDir.find_last_of("\\/", exeDir.length() - 2);
+        std::string parentDir;
+        if (parentSlash != std::string::npos) {
+            parentDir = exeDir.substr(0, parentSlash + 1);
+        } else {
+            parentDir = exeDir; // Fallback to current directory if parent not found
+        }
+        
+        return parentDir + "config.ini";
+    }
+    
     void loadConfig() {
-        std::ifstream configFile("config.ini");
+        std::string configPath = getConfigPath();
+        std::ifstream configFile(configPath);
         if (configFile.is_open()) {
             std::string line;
             while (std::getline(configFile, line)) {
@@ -122,7 +147,8 @@ public:
     }
     
     void createDefaultConfig() {
-        std::ofstream configFile("config.ini");
+        std::string configPath = getConfigPath();
+        std::ofstream configFile(configPath);
         if (configFile.is_open()) {
             configFile << "# TimeWallpaper Configuration" << std::endl;
             configFile << "# auto_detect_location=true: Automatically detect your location via IP geolocation" << std::endl;
@@ -269,7 +295,8 @@ public:
     
     void saveLocationToConfig() {
         // Update the config file with detected location
-        std::ofstream configFile("config.ini");
+        std::string configPath = getConfigPath();
+        std::ofstream configFile(configPath);
         if (configFile.is_open()) {
             configFile << "# TimeWallpaper Configuration" << std::endl;
             configFile << "# Location auto-detected successfully!" << std::endl;
@@ -462,6 +489,7 @@ public:
         return getColorForHour(currentHour);
     }
     
+    
     Color getColorForHour(double hour) {
         if (todaysColors.empty()) return Color(128, 128, 128);
         
@@ -560,9 +588,58 @@ public:
         std::wstring widePath(wideSize, 0);
         MultiByteToWideChar(CP_UTF8, 0, tempPath.c_str(), -1, &widePath[0], wideSize);
         
-        BOOL result = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (PVOID)widePath.c_str(),
-                                           SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE);
+        BOOL result = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (PVOID)widePath.c_str(), 0);
         return result == TRUE;
+    }
+    
+    DWORD getCurrentTaskbarColorSetting() {
+        HKEY hKey;
+        DWORD colorPrevalence = 0;
+        DWORD dataSize = sizeof(DWORD);
+        
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, 
+                         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 
+                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            RegQueryValueExA(hKey, "ColorPrevalence", NULL, NULL, (LPBYTE)&colorPrevalence, &dataSize);
+            RegCloseKey(hKey);
+        }
+        
+        return colorPrevalence;
+    }
+    
+    bool updateAccentColor(Color color) {
+        DWORD currentTaskbarSetting = getCurrentTaskbarColorSetting();
+        
+        DWORD accentColor = (0xFF000000) | (color.r << 16) | (color.g << 8) | color.b;
+        
+        HKEY hKey;
+        bool success = true;
+        
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, 
+                         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 
+                         0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+            
+            if (RegSetValueExA(hKey, "AccentColor", 0, REG_DWORD, 
+                              (const BYTE*)&accentColor, sizeof(accentColor)) != ERROR_SUCCESS) {
+                success = false;
+            }
+            
+            if (RegSetValueExA(hKey, "ColorPrevalence", 0, REG_DWORD, 
+                              (const BYTE*)&currentTaskbarSetting, sizeof(currentTaskbarSetting)) != ERROR_SUCCESS) {
+                success = false;
+            }
+            
+            RegCloseKey(hKey);
+        } else {
+            success = false;
+        }
+        
+        if (success) {
+            SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 
+                               (LPARAM)"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
+        }
+        
+        return success;
     }
     
     bool updateWallpaper() {
@@ -576,6 +653,10 @@ public:
         if (!setWallpaper()) {
             logMessage("Failed to set wallpaper");
             return false;
+        }
+        
+        if (!updateAccentColor(currentColor)) {
+            logMessage("Failed to update accent color");
         }
         
         return true;
@@ -633,7 +714,7 @@ public:
                         std::string statusMsg = "[" + std::to_string(updateCount) + "] " 
                                                + formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0))
                                                + " | " + period 
-                                               + " | RGB(" + std::to_string(currentColor.r) + ", " 
+                                               + " | Wallpaper RGB(" + std::to_string(currentColor.r) + ", " 
                                                + std::to_string(currentColor.g) + ", " 
                                                + std::to_string(currentColor.b) + ")";
                         
@@ -664,7 +745,16 @@ public:
             exeDir = "";
         }
         
-        std::string logPath = exeDir + "log.txt";
+        // Go up one directory level
+        size_t parentSlash = exeDir.find_last_of("\\/", exeDir.length() - 2);
+        std::string parentDir;
+        if (parentSlash != std::string::npos) {
+            parentDir = exeDir.substr(0, parentSlash + 1);
+        } else {
+            parentDir = exeDir; // Fallback to current directory if parent not found
+        }
+        
+        std::string logPath = parentDir + "log.txt";
         std::ofstream logFile(logPath, std::ios::app);
         if (logFile.is_open()) {
             time_t now = time(0);
