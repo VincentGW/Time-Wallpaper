@@ -14,8 +14,7 @@ TimeWallpaper automatically changes your desktop wallpaper based on real astrono
 
 ## 🚀 Quick Start
 
-A. Run Forever:
-   Compile or move TimeWallpaper.exe here -
+A. Run Forever - Compile or move TimeWallpaper.exe here:
    ```
    %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
    ```
