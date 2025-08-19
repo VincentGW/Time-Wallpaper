@@ -14,11 +14,12 @@ TimeWallpaper automatically changes your desktop wallpaper based on real astrono
 
 ## 🚀 Quick Start
 
-A. Auto-Start with Windows (Recommended):
-   '''
-   cmd > install_startup.bat
-   '''
-   This adds TimeWallpaper to your Windows startup folder so it runs automatically when you log in.
+A. Run Forever:
+   Compile or move TimeWallpaper.exe here -
+   ```
+   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
+   ```
+   Runs every time you log in.
 
 B. Run Manually:
    ```
@@ -35,15 +36,9 @@ Edit `config.ini` to customize:
 - Update frequency (minutes)
 - Enable debug output
 
-## 🔧 Startup
+## 🔧 Manage
 
-To Install Auto-Start:
-```cmd
-install_startup.bat
-```
-
-To Remove Auto-Start:
-Delete this file:
+To uninstall, delete this file:
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TimeWallpaper_Startup.bat
 ```
@@ -51,10 +46,6 @@ Delete this file:
 Check if Running:
 - Look for `TimeWallpaper.exe` in Task Manager
 - Wallpaper should change colors gradually throughout the day
-
-Files Created:
-- `start_timewallpaper.bat` - Startup script that launches in background
-- Startup shortcut in Windows startup folder
 
 ## 🌅 Color Schedule
 
