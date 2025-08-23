@@ -434,34 +434,135 @@ public:
     }
     
     void generateTodaysColors() {
-        todaysColors.clear();
+        // This method is now simplified - we calculate colors on demand
+        // rather than pre-generating discrete points
+        if (config.debug_mode) {
+            logMessage("Solar-based continuous color calculation initialized");
+            logMessage("  Sunrise: " + formatHour(todaysSolarTimes.sunrise_hour));
+            logMessage("  Solar Noon: " + formatHour(todaysSolarTimes.solar_noon_hour));
+            logMessage("  Sunset: " + formatHour(todaysSolarTimes.sunset_hour));
+            logMessage("  Civil Twilight End: " + formatHour(todaysSolarTimes.civil_twilight_end));
+            
+            // Generate CSV file with RGB values for each minute of the day
+            generateDebugCSV();
+        }
+    }
+    
+    void generateDebugCSV() {
+        std::string csvPath = getConfigPath();
+        size_t lastSlash = csvPath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            csvPath = csvPath.substr(0, lastSlash + 1) + "daily_colors.csv";
+        } else {
+            csvPath = "daily_colors.csv";
+        }
         
+        std::ofstream csvFile(csvPath);
+        if (!csvFile.is_open()) {
+            logMessage("Failed to create debug CSV file: " + csvPath);
+            return;
+        }
+        
+        // Write CSV header
+        csvFile << "Time,Hour,Minute,R,G,B,Period" << std::endl;
+        
+        // Generate colors for each minute of the day
+        for (int hour = 0; hour < 24; hour++) {
+            for (int minute = 0; minute < 60; minute++) {
+                double timeHour = hour + (minute / 60.0);
+                Color color = getColorForHour(timeHour);
+                std::string period = getPeriodForHour(timeHour);
+                
+                // Format time as HH:MM
+                std::stringstream timeStr;
+                timeStr << std::setfill('0') << std::setw(2) << hour 
+                       << ":" << std::setw(2) << minute;
+                
+                csvFile << timeStr.str() << "," 
+                       << std::fixed << std::setprecision(2) << timeHour << ","
+                       << minute << ","
+                       << color.r << "," << color.g << "," << color.b << ","
+                       << period << std::endl;
+            }
+        }
+        
+        csvFile.close();
+        logMessage("Debug CSV generated: " + csvPath);
+    }
+    
+    std::string getPeriodForHour(double hour) {
         double sunrise = todaysSolarTimes.sunrise_hour;
         double sunset = todaysSolarTimes.sunset_hour;
         double solar_noon = todaysSolarTimes.solar_noon_hour;
         double civil_twilight_end = todaysSolarTimes.civil_twilight_end;
         
-        std::vector<ColorPoint> points = {
-            {0.0,                        Color(8, 8, 25),       "Deep Night"},
-            {sunrise - 3.0,              Color(15, 10, 35),     "Pre-Dawn"}, 
-            {sunrise - 1.0,              Color(25, 15, 45),     "Early Dawn"},
-            {sunrise - 0.5,              Color(60, 30, 80),     "Dawn"},
-            {sunrise,                    Color(255, 229, 204),  "Sunrise"},
-            {sunrise + 0.5,              Color(255, 218, 185),  "Early Morning"},
-            {sunrise + 2.0,              Color(230, 255, 230),  "Morning"},
-            {solar_noon - 1.0,           Color(215, 255, 215),  "Late Morning"},
-            {solar_noon,                 Color(135, 206, 250),  "Noon"},
-            {solar_noon + 1.0,           Color(173, 216, 230),  "Early Afternoon"},
-            {sunset - 2.0,               Color(210, 180, 140),  "Late Afternoon"},
-            {sunset - 0.5,               Color(255, 165, 0),    "Pre-Sunset"},
-            {sunset,                     Color(255, 140, 0),    "Sunset"},
-            {sunset + 0.5,               Color(200, 80, 60),    "Post-Sunset"},
-            {civil_twilight_end,         Color(72, 61, 85),     "Civil Twilight"},
-            {civil_twilight_end + 1.0,   Color(65, 55, 80),     "Early Evening"},
-            {civil_twilight_end + 2.0,   Color(45, 25, 65),     "Evening"},
-            {civil_twilight_end + 3.0,   Color(25, 15, 45),     "Late Evening"},
-            {23.99,                      Color(8, 8, 25),       "Night"}
-        };
+        // Create the same monotonic timeline for period detection
+        std::vector<ColorPoint> points;
+        
+        // Night and early morning
+        points.push_back({0.0, Color(8, 8, 25), "Deep Night"});
+        points.push_back({std::max(1.0, sunrise - 3.0), Color(15, 10, 35), "Pre-Dawn"});
+        points.push_back({std::max(2.0, sunrise - 1.5), Color(25, 15, 45), "Early Dawn"});
+        points.push_back({std::max(3.0, sunrise - 1.0), Color(45, 25, 65), "Early Dawn"});
+        points.push_back({std::max(4.0, sunrise - 0.5), Color(80, 50, 90), "Dawn"});
+        points.push_back({std::max(5.0, sunrise - 0.25), Color(120, 80, 110), "Dawn"});
+        
+        // Sunrise and morning
+        points.push_back({std::max(6.0, sunrise), Color(160, 120, 130), "Sunrise"});
+        points.push_back({std::max(7.0, sunrise + 0.25), Color(190, 150, 140), "Sunrise"});
+        points.push_back({std::max(8.0, sunrise + 0.5), Color(200, 200, 160), "Early Morning"});
+        points.push_back({std::max(9.0, sunrise + 1.0), Color(215, 220, 180), "Early Morning"});
+        points.push_back({std::max(10.0, sunrise + 2.0), Color(230, 240, 220), "Morning"});
+        
+        // Day time
+        points.push_back({std::max(11.0, solar_noon - 1.5), Color(210, 235, 200), "Late Morning"});
+        points.push_back({std::max(11.5, solar_noon - 1.0), Color(190, 220, 215), "Late Morning"});
+        points.push_back({std::max(12.0, solar_noon), Color(170, 210, 240), "Noon"});
+        points.push_back({std::max(13.0, solar_noon + 1.0), Color(170, 210, 235), "Early Afternoon"});
+        points.push_back({std::max(14.0, solar_noon + 1.5), Color(170, 210, 230), "Early Afternoon"});
+        
+        // Afternoon to sunset - ensure progressive timing
+        double late_afternoon_start = std::max(15.0, sunset - 2.0);
+        double pre_sunset_start = std::max(late_afternoon_start + 0.5, sunset - 1.0);
+        double pre_sunset_mid = std::max(pre_sunset_start + 0.25, sunset - 0.5);
+        double pre_sunset_end = std::max(pre_sunset_mid + 0.25, sunset - 0.25);
+        double sunset_time = std::max(pre_sunset_end + 0.25, sunset);
+        
+        points.push_back({late_afternoon_start, Color(170, 200, 230), "Late Afternoon"});
+        points.push_back({pre_sunset_start, Color(170, 190, 230), "Late Afternoon"});
+        points.push_back({pre_sunset_mid, Color(170, 170, 200), "Pre-Sunset"});
+        points.push_back({pre_sunset_end, Color(180, 160, 160), "Pre-Sunset"});
+        points.push_back({sunset_time, Color(220, 145, 70), "Sunset"});
+        
+        // Post-sunset to evening - ensure monotonic progression
+        double post_sunset_1 = sunset_time + 0.25;
+        double post_sunset_2 = post_sunset_1 + 0.25;
+        double post_sunset_3 = post_sunset_2 + 0.25;
+        double twilight_1 = post_sunset_3 + 0.25;
+        double twilight_2 = twilight_1 + 0.25;
+        double twilight_3 = std::max(twilight_2 + 0.25, civil_twilight_end);
+        
+        points.push_back({post_sunset_1, Color(230, 140, 70), "Sunset"});
+        points.push_back({post_sunset_2, Color(210, 120, 60), "Post-Sunset"});
+        points.push_back({post_sunset_3, Color(140, 90, 75), "Post-Sunset"});
+        points.push_back({twilight_1, Color(110, 70, 80), "Civil Twilight"});
+        points.push_back({twilight_2, Color(75, 65, 80), "Civil Twilight"});
+        points.push_back({twilight_3, Color(60, 55, 75), "Civil Twilight"});
+        
+        // Evening progression - based on twilight end
+        double evening_start = twilight_3 + 0.25;
+        points.push_back({evening_start, Color(50, 50, 70), "Evening"});
+        points.push_back({evening_start + 0.25, Color(50, 45, 70), "Evening"});
+        points.push_back({evening_start + 0.5, Color(50, 40, 60), "Evening"});
+        points.push_back({evening_start + 0.75, Color(50, 35, 60), "Evening"});
+        points.push_back({evening_start + 1.0, Color(45, 30, 55), "Evening"});
+        points.push_back({evening_start + 1.25, Color(45, 30, 45), "Evening"});
+        points.push_back({evening_start + 1.5, Color(35, 30, 40), "Evening"});
+        points.push_back({evening_start + 1.75, Color(35, 28, 40), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(30, 22, 40), "Late Evening"});
+        points.push_back({evening_start + 2.75, Color(20, 17, 40), "Late Evening"});
+        points.push_back({evening_start + 3.25, Color(15, 12, 35), "Night"});
+        points.push_back({23.99, Color(8, 8, 25), "Night"});
         
         // Fix times outside 0-24 range
         for (auto& point : points) {
@@ -469,16 +570,25 @@ public:
             while (point.hour >= 24) point.hour -= 24.0;
         }
         
+        // Sort points by time
         std::sort(points.begin(), points.end(), 
                   [](const ColorPoint& a, const ColorPoint& b) {
                       return a.hour < b.hour;
                   });
         
-        todaysColors = points;
-        
-        if (config.debug_mode) {
-            logMessage("Generated " + std::to_string(todaysColors.size()) + " color points for today");
+        // Find which period this hour falls into
+        for (size_t i = 0; i < points.size() - 1; i++) {
+            if (hour >= points[i].hour && hour <= points[i + 1].hour) {
+                return points[i].period;
+            }
         }
+        
+        // Handle wrap-around
+        if (hour >= points.back().hour) {
+            return points.back().period;
+        }
+        
+        return points.front().period;
     }
     
     Color getCurrentColor() {
@@ -491,25 +601,133 @@ public:
     
     
     Color getColorForHour(double hour) {
-        if (todaysColors.empty()) return Color(128, 128, 128);
+        double sunrise = todaysSolarTimes.sunrise_hour;
+        double sunset = todaysSolarTimes.sunset_hour;
+        double solar_noon = todaysSolarTimes.solar_noon_hour;
+        double civil_twilight_end = todaysSolarTimes.civil_twilight_end;
         
-        for (size_t i = 0; i < todaysColors.size() - 1; i++) {
-            if (hour >= todaysColors[i].hour && hour <= todaysColors[i + 1].hour) {
-                double progress = (hour - todaysColors[i].hour) / (todaysColors[i + 1].hour - todaysColors[i].hour);
-                return interpolateColor(todaysColors[i].color, todaysColors[i + 1].color, progress);
+        // Normalize hour to 0-24 range
+        while (hour < 0) hour += 24.0;
+        while (hour >= 24) hour -= 24.0;
+        
+        // Create base timeline points ensuring no overlaps
+        std::vector<ColorPoint> points;
+        
+        // Night and early morning
+        points.push_back({0.0, Color(8, 8, 25), "Deep Night"});
+        points.push_back({std::max(1.0, sunrise - 3.0), Color(15, 10, 35), "Pre-Dawn"});
+        points.push_back({std::max(2.0, sunrise - 1.5), Color(25, 15, 45), "Early Dawn"});
+        points.push_back({std::max(3.0, sunrise - 1.0), Color(45, 25, 65), "Early Dawn"});
+        points.push_back({std::max(4.0, sunrise - 0.5), Color(80, 50, 90), "Dawn"});
+        points.push_back({std::max(5.0, sunrise - 0.25), Color(120, 80, 110), "Dawn"});
+        
+        // Sunrise and morning
+        points.push_back({std::max(6.0, sunrise), Color(160, 120, 130), "Sunrise"});
+        points.push_back({std::max(7.0, sunrise + 0.25), Color(190, 150, 140), "Sunrise"});
+        points.push_back({std::max(8.0, sunrise + 0.5), Color(210, 180, 160), "Early Morning"});
+        points.push_back({std::max(9.0, sunrise + 1.0), Color(220, 200, 180), "Early Morning"});
+        points.push_back({std::max(10.0, sunrise + 2.0), Color(230, 240, 220), "Morning"});
+        
+        // Day time
+        points.push_back({std::max(11.0, solar_noon - 1.5), Color(210, 230, 200), "Late Morning"});
+        points.push_back({std::max(11.5, solar_noon - 1.0), Color(190, 220, 190), "Late Morning"});
+        points.push_back({std::max(12.0, solar_noon), Color(170, 210, 230), "Noon"});
+        points.push_back({std::max(13.0, solar_noon + 1.0), Color(180, 210, 220), "Early Afternoon"});
+        points.push_back({std::max(14.0, solar_noon + 1.5), Color(190, 200, 210), "Early Afternoon"});
+        
+        // Afternoon to sunset - ensure progressive timing
+        double late_afternoon_start = std::max(15.0, sunset - 2.0);
+        double pre_sunset_start = std::max(late_afternoon_start + 0.5, sunset - 1.0);
+        double pre_sunset_mid = std::max(pre_sunset_start + 0.25, sunset - 0.5);
+        double pre_sunset_end = std::max(pre_sunset_mid + 0.25, sunset - 0.25);
+        double sunset_time = std::max(pre_sunset_end + 0.25, sunset);
+        
+        points.push_back({late_afternoon_start, Color(200, 180, 150), "Late Afternoon"});
+        points.push_back({pre_sunset_start, Color(210, 170, 130), "Late Afternoon"});
+        points.push_back({pre_sunset_mid, Color(220, 160, 110), "Pre-Sunset"});
+        points.push_back({pre_sunset_end, Color(230, 150, 90), "Pre-Sunset"});
+        points.push_back({sunset_time, Color(230, 140, 70), "Sunset"});
+        
+        // Post-sunset to evening - ensure monotonic progression
+        double post_sunset_1 = sunset_time + 0.25;
+        double post_sunset_2 = post_sunset_1 + 0.25;
+        double post_sunset_3 = post_sunset_2 + 0.25;
+        double twilight_1 = post_sunset_3 + 0.25;
+        double twilight_2 = twilight_1 + 0.25;
+        double twilight_3 = std::max(twilight_2 + 0.25, civil_twilight_end);
+        
+        points.push_back({post_sunset_1, Color(210, 120, 60), "Sunset"});
+        points.push_back({post_sunset_2, Color(170, 100, 70), "Post-Sunset"});
+        points.push_back({post_sunset_3, Color(140, 90, 75), "Post-Sunset"});
+        points.push_back({twilight_1, Color(110, 80, 80), "Civil Twilight"});
+        points.push_back({twilight_2, Color(95, 75, 80), "Civil Twilight"});
+        points.push_back({twilight_3, Color(80, 65, 75), "Civil Twilight"});
+        
+        // Evening progression - based on twilight end
+        double evening_start = twilight_3 + 0.25;
+        points.push_back({evening_start, Color(70, 60, 75), "Evening"});
+        points.push_back({evening_start + 0.25, Color(65, 55, 70), "Evening"});
+        points.push_back({evening_start + 0.5, Color(60, 50, 70), "Evening"});
+        points.push_back({evening_start + 0.75, Color(55, 45, 65), "Evening"});
+        points.push_back({evening_start + 1.0, Color(50, 40, 65), "Evening"});
+        points.push_back({evening_start + 1.25, Color(45, 35, 60), "Evening"});
+        points.push_back({evening_start + 1.5, Color(40, 30, 55), "Evening"});
+        points.push_back({evening_start + 1.75, Color(38, 28, 52), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(30, 22, 48), "Late Evening"});
+        points.push_back({evening_start + 2.75, Color(22, 17, 42), "Late Evening"});
+        points.push_back({evening_start + 3.25, Color(15, 12, 35), "Night"});
+        points.push_back({23.99, Color(8, 8, 25), "Night"});
+        
+        // Fix times outside 0-24 range
+        for (auto& point : points) {
+            while (point.hour < 0) point.hour += 24.0;
+            while (point.hour >= 24) point.hour -= 24.0;
+        }
+        
+        // Sort points by time
+        std::sort(points.begin(), points.end(), 
+                  [](const ColorPoint& a, const ColorPoint& b) {
+                      return a.hour < b.hour;
+                  });
+        
+        // Find the appropriate color interpolation
+        for (size_t i = 0; i < points.size() - 1; i++) {
+            if (hour >= points[i].hour && hour <= points[i + 1].hour) {
+                double progress = (hour - points[i].hour) / (points[i + 1].hour - points[i].hour);
+                return interpolateColor(points[i].color, points[i + 1].color, progress);
             }
         }
         
-        // Handle wrap-around
-        double lastHour = todaysColors.back().hour;
-        double firstHour = todaysColors.front().hour + 24;
+        // Handle wrap-around (from last point to first point)
+        double lastHour = points.back().hour;
+        double firstHour = points.front().hour + 24;
         
         if (hour >= lastHour) {
             double progress = (hour - lastHour) / (firstHour - lastHour);
-            return interpolateColor(todaysColors.back().color, todaysColors.front().color, progress);
+            return interpolateColor(points.back().color, points.front().color, progress);
         }
         
-        return todaysColors.front().color;
+        return points.front().color;
+    }
+    
+    bool isTimeBetween(double current, double start, double end) {
+        // Handle case where time range wraps around midnight
+        if (start > end) {
+            return (current >= start || current <= end);
+        }
+        return (current >= start && current <= end);
+    }
+    
+    double getProgressBetween(double current, double start, double end) {
+        if (start > end) {
+            // Handle wrap around midnight
+            if (current >= start) {
+                return (current - start) / (24.0 - start + end);
+            } else {
+                return (24.0 - start + current) / (24.0 - start + end);
+            }
+        }
+        return (current - start) / (end - start);
     }
     
     std::string getCurrentPeriod() {
@@ -517,13 +735,7 @@ public:
         tm* timeinfo = localtime(&now);
         double currentHour = timeinfo->tm_hour + (timeinfo->tm_min / 60.0);
         
-        for (size_t i = 0; i < todaysColors.size() - 1; i++) {
-            if (currentHour >= todaysColors[i].hour && currentHour <= todaysColors[i + 1].hour) {
-                return todaysColors[i].period;
-            }
-        }
-        
-        return todaysColors.back().period;
+        return getPeriodForHour(currentHour);
     }
     
     Color interpolateColor(Color start, Color end, double ratio) {
