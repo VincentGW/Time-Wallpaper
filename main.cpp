@@ -12,14 +12,15 @@
 #include <wininet.h>
 #include <comdef.h>
 #include <combaseapi.h>
+#include <gdiplus.h>
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
-// Windows Service globals
-SERVICE_STATUS g_ServiceStatus = { 0 };
-SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
-HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+// Power management for wake-from-sleep detection
+HWND g_hWnd = NULL;
+bool g_justWokeUp = false;
 
 struct Color {
     int r, g, b;
@@ -41,7 +42,6 @@ struct Config {
     double longitude = -74.0060;
     std::string location_name = "New York City";
     int update_interval_minutes = 1;
-    bool service_mode = false;
     bool debug_mode = false;
     bool auto_detect_location = true;
 };
@@ -51,6 +51,8 @@ private:
     int screenWidth, screenHeight;
     std::string tempPath;
     Config config;
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
     
     struct ColorPoint {
         double hour;
@@ -64,6 +66,8 @@ private:
 
 public:
     TimeWallpaper() {
+        Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+        
         screenWidth = GetSystemMetrics(SM_CXSCREEN);
         screenHeight = GetSystemMetrics(SM_CYSCREEN);
         
@@ -73,18 +77,19 @@ public:
         
         loadConfig();
         
-        // Don't auto-detect location in constructor for service mode - do it later in run()
-        if (config.auto_detect_location && !config.service_mode) {
+        if (config.auto_detect_location) {
             autoDetectLocation();
         }
         
-        if (!config.service_mode) {
-            logMessage("TimeWallpaper v2.0 - Solar Edition");
-            logMessage("===================================");
-            logMessage("Location: " + config.location_name + " (" + std::to_string(config.latitude) + ", " + std::to_string(config.longitude) + ")");
-            logMessage("Update interval: " + std::to_string(config.update_interval_minutes) + " minute(s)");
-            logMessage("Screen: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
-        }
+        logMessage("TimeWallpaper v2.0 - Solar Edition");
+        logMessage("===================================");
+        logMessage("Location: " + config.location_name + " (" + std::to_string(config.latitude) + ", " + std::to_string(config.longitude) + ")");
+        logMessage("Update interval: " + std::to_string(config.update_interval_minutes) + " minute(s)");
+        logMessage("Screen: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+    }
+    
+    ~TimeWallpaper() {
+        Gdiplus::GdiplusShutdown(gdiplusToken);
     }
     
     std::string getConfigPath() {
@@ -134,7 +139,6 @@ public:
                     else if (key == "longitude") config.longitude = std::stod(value);
                     else if (key == "location_name") config.location_name = value;
                     else if (key == "update_interval_minutes") config.update_interval_minutes = std::stoi(value);
-                    else if (key == "service_mode") config.service_mode = (value == "true");
                     else if (key == "debug_mode") config.debug_mode = (value == "true");
                     else if (key == "auto_detect_location") config.auto_detect_location = (value == "true");
                 }
@@ -160,7 +164,6 @@ public:
             configFile << "longitude=" << config.longitude << std::endl;
             configFile << "location_name=" << config.location_name << std::endl;
             configFile << "update_interval_minutes=" << config.update_interval_minutes << std::endl;
-            configFile << "service_mode=" << (config.service_mode ? "true" : "false") << std::endl;
             configFile << "debug_mode=" << (config.debug_mode ? "true" : "false") << std::endl;
             configFile << "auto_detect_location=" << (config.auto_detect_location ? "true" : "false") << std::endl;
             configFile.close();
@@ -307,7 +310,6 @@ public:
             configFile << "longitude=" << config.longitude << std::endl;
             configFile << "location_name=" << config.location_name << std::endl;
             configFile << "update_interval_minutes=" << config.update_interval_minutes << std::endl;
-            configFile << "service_mode=" << (config.service_mode ? "true" : "false") << std::endl;
             configFile << "debug_mode=" << (config.debug_mode ? "true" : "false") << std::endl;
             configFile << "auto_detect_location=" << (config.auto_detect_location ? "true" : "false") << std::endl;
             configFile.close();
@@ -327,8 +329,20 @@ public:
         if (ss >> hours >> colon1 >> minutes >> colon2 >> seconds) {
             double utcHour = hours + (minutes / 60.0) + (seconds / 3600.0);
             
-            // Simple EST conversion (UTC-5) - TODO: proper timezone handling
-            double localHour = utcHour - 5.0;
+            // Get current system timezone info to determine if DST is active
+            TIME_ZONE_INFORMATION tzi;
+            DWORD tziResult = GetTimeZoneInformation(&tzi);
+            
+            double offsetHours;
+            if (tziResult == TIME_ZONE_ID_DAYLIGHT) {
+                // DST is active - use daylight bias
+                offsetHours = -(tzi.Bias + tzi.DaylightBias) / 60.0;
+            } else {
+                // Standard time - use standard bias
+                offsetHours = -(tzi.Bias + tzi.StandardBias) / 60.0;
+            }
+            
+            double localHour = utcHour + offsetHours;
             if (localHour < 0) localHour += 24.0;
             if (localHour >= 24) localHour -= 24.0;
             
@@ -500,10 +514,10 @@ public:
         std::vector<ColorPoint> points;
         
         // Night and early morning
-        points.push_back({0.0, Color(8, 8, 25), "Deep Night"});
-        points.push_back({std::max(1.0, sunrise - 3.0), Color(15, 10, 35), "Pre-Dawn"});
-        points.push_back({std::max(2.0, sunrise - 1.5), Color(25, 15, 45), "Early Dawn"});
-        points.push_back({std::max(3.0, sunrise - 1.0), Color(45, 25, 65), "Early Dawn"});
+        points.push_back({0.0, Color(8, 8, 15), "Deep Night"});
+        points.push_back({std::max(1.0, sunrise - 3.0), Color(10, 10, 25), "Pre-Dawn"});
+        points.push_back({std::max(2.0, sunrise - 1.5), Color(15, 15, 35), "Early Dawn"});
+        points.push_back({std::max(3.0, sunrise - 1.0), Color(35, 15, 45), "Early Dawn"});
         points.push_back({std::max(4.0, sunrise - 0.5), Color(80, 50, 90), "Dawn"});
         points.push_back({std::max(5.0, sunrise - 0.25), Color(120, 80, 110), "Dawn"});
         
@@ -518,8 +532,8 @@ public:
         points.push_back({std::max(11.0, solar_noon - 1.5), Color(210, 235, 200), "Late Morning"});
         points.push_back({std::max(11.5, solar_noon - 1.0), Color(190, 220, 215), "Late Morning"});
         points.push_back({std::max(12.0, solar_noon), Color(170, 210, 240), "Noon"});
-        points.push_back({std::max(13.0, solar_noon + 1.0), Color(170, 210, 235), "Early Afternoon"});
-        points.push_back({std::max(14.0, solar_noon + 1.5), Color(170, 210, 230), "Early Afternoon"});
+        points.push_back({std::max(13.0, solar_noon + 1.0), Color(170, 210, 240), "Early Afternoon"});
+        points.push_back({std::max(14.0, solar_noon + 1.5), Color(170, 210, 240), "Early Afternoon"});
         
         // Afternoon to sunset - ensure progressive timing
         double late_afternoon_start = std::max(15.0, sunset - 2.0);
@@ -528,10 +542,10 @@ public:
         double pre_sunset_end = std::max(pre_sunset_mid + 0.25, sunset - 0.25);
         double sunset_time = std::max(pre_sunset_end + 0.25, sunset);
         
-        points.push_back({late_afternoon_start, Color(170, 200, 230), "Late Afternoon"});
-        points.push_back({pre_sunset_start, Color(170, 190, 230), "Late Afternoon"});
-        points.push_back({pre_sunset_mid, Color(170, 170, 200), "Pre-Sunset"});
-        points.push_back({pre_sunset_end, Color(180, 160, 160), "Pre-Sunset"});
+        points.push_back({late_afternoon_start, Color(170, 210, 235), "Late Afternoon"});
+        points.push_back({pre_sunset_start, Color(170, 200, 230), "Late Afternoon"});
+        points.push_back({pre_sunset_mid, Color(170, 200, 230), "Pre-Sunset"});
+        points.push_back({pre_sunset_end, Color(180, 200, 225), "Pre-Sunset"});
         points.push_back({sunset_time, Color(220, 145, 70), "Sunset"});
         
         // Post-sunset to evening - ensure monotonic progression
@@ -553,15 +567,15 @@ public:
         double evening_start = twilight_3 + 0.25;
         points.push_back({evening_start, Color(50, 50, 70), "Evening"});
         points.push_back({evening_start + 0.25, Color(50, 45, 70), "Evening"});
-        points.push_back({evening_start + 0.5, Color(50, 40, 60), "Evening"});
-        points.push_back({evening_start + 0.75, Color(50, 35, 60), "Evening"});
-        points.push_back({evening_start + 1.0, Color(45, 30, 55), "Evening"});
-        points.push_back({evening_start + 1.25, Color(45, 30, 45), "Evening"});
-        points.push_back({evening_start + 1.5, Color(35, 30, 40), "Evening"});
-        points.push_back({evening_start + 1.75, Color(35, 28, 40), "Late Evening"});
-        points.push_back({evening_start + 2.25, Color(30, 22, 40), "Late Evening"});
-        points.push_back({evening_start + 2.75, Color(20, 17, 40), "Late Evening"});
-        points.push_back({evening_start + 3.25, Color(15, 12, 35), "Night"});
+        points.push_back({evening_start + 0.5, Color(40, 30, 50), "Evening"});
+        points.push_back({evening_start + 0.75, Color(40, 55, 50), "Evening"});
+        points.push_back({evening_start + 1.0, Color(35, 25, 55), "Evening"});
+        points.push_back({evening_start + 1.25, Color(35, 25, 40), "Evening"});
+        points.push_back({evening_start + 1.5, Color(30, 25, 35), "Evening"});
+        points.push_back({evening_start + 1.75, Color(28, 24, 30), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(26, 22, 30), "Late Evening"});
+        points.push_back({evening_start + 2.75, Color(15, 17, 27), "Late Evening"});
+        points.push_back({evening_start + 3.25, Color(9, 9, 25), "Night"});
         points.push_back({23.99, Color(8, 8, 25), "Night"});
         
         // Fix times outside 0-24 range
@@ -615,10 +629,10 @@ public:
         
         // Night and early morning
         points.push_back({0.0, Color(8, 8, 25), "Deep Night"});
-        points.push_back({std::max(1.0, sunrise - 3.0), Color(15, 10, 35), "Pre-Dawn"});
-        points.push_back({std::max(2.0, sunrise - 1.5), Color(25, 15, 45), "Early Dawn"});
-        points.push_back({std::max(3.0, sunrise - 1.0), Color(45, 25, 65), "Early Dawn"});
-        points.push_back({std::max(4.0, sunrise - 0.5), Color(80, 50, 90), "Dawn"});
+        points.push_back({std::max(1.0, sunrise - 3.0), Color(10, 10, 25), "Pre-Dawn"});
+        points.push_back({std::max(2.0, sunrise - 1.5), Color(15, 15, 45), "Early Dawn"});
+        points.push_back({std::max(3.0, sunrise - 1.0), Color(25, 15, 65), "Early Dawn"});
+        points.push_back({std::max(4.0, sunrise - 0.5), Color(50, 30, 65), "Dawn"});
         points.push_back({std::max(5.0, sunrise - 0.25), Color(120, 80, 110), "Dawn"});
         
         // Sunrise and morning
@@ -632,29 +646,29 @@ public:
         points.push_back({std::max(11.0, solar_noon - 1.5), Color(210, 230, 200), "Late Morning"});
         points.push_back({std::max(11.5, solar_noon - 1.0), Color(190, 220, 190), "Late Morning"});
         points.push_back({std::max(12.0, solar_noon), Color(170, 210, 230), "Noon"});
-        points.push_back({std::max(13.0, solar_noon + 1.0), Color(180, 210, 220), "Early Afternoon"});
-        points.push_back({std::max(14.0, solar_noon + 1.5), Color(190, 200, 210), "Early Afternoon"});
+        points.push_back({std::max(13.0, solar_noon + 1.0), Color(170, 210, 230), "Early Afternoon"});
+        points.push_back({std::max(14.0, solar_noon + 1.5), Color(170, 210, 230), "Early Afternoon"});
         
         // Afternoon to sunset - ensure progressive timing
-        double late_afternoon_start = std::max(15.0, sunset - 2.0);
-        double pre_sunset_start = std::max(late_afternoon_start + 0.5, sunset - 1.0);
-        double pre_sunset_mid = std::max(pre_sunset_start + 0.25, sunset - 0.5);
-        double pre_sunset_end = std::max(pre_sunset_mid + 0.25, sunset - 0.25);
-        double sunset_time = std::max(pre_sunset_end + 0.25, sunset);
+        double late_afternoon_start = sunset - 2.0;
+        double pre_sunset_start = sunset - 1.5;
+        double pre_sunset_mid = sunset - 1.0;
+        double pre_sunset_end = sunset - 0.5;
+        double sunset_time = sunset;
         
-        points.push_back({late_afternoon_start, Color(200, 180, 150), "Late Afternoon"});
-        points.push_back({pre_sunset_start, Color(210, 170, 130), "Late Afternoon"});
-        points.push_back({pre_sunset_mid, Color(220, 160, 110), "Pre-Sunset"});
-        points.push_back({pre_sunset_end, Color(230, 150, 90), "Pre-Sunset"});
+        points.push_back({late_afternoon_start, Color(170, 210, 230), "Late Afternoon"});
+        points.push_back({pre_sunset_start, Color(170, 210, 230), "Late Afternoon"});
+        points.push_back({pre_sunset_mid, Color(175, 200, 230), "Pre-Sunset"});
+        points.push_back({pre_sunset_end, Color(180, 200, 225), "Pre-Sunset"});
         points.push_back({sunset_time, Color(230, 140, 70), "Sunset"});
         
         // Post-sunset to evening - ensure monotonic progression
-        double post_sunset_1 = sunset_time + 0.25;
-        double post_sunset_2 = post_sunset_1 + 0.25;
-        double post_sunset_3 = post_sunset_2 + 0.25;
-        double twilight_1 = post_sunset_3 + 0.25;
-        double twilight_2 = twilight_1 + 0.25;
-        double twilight_3 = std::max(twilight_2 + 0.25, civil_twilight_end);
+        double post_sunset_1 = sunset_time + 0.1;
+        double post_sunset_2 = post_sunset_1 + 0.1;
+        double post_sunset_3 = post_sunset_2 + 0.1;
+        double twilight_1 = post_sunset_3 + 0.1;
+        double twilight_2 = twilight_1 + 0.1;
+        double twilight_3 = twilight_2 + 0.15;
         
         points.push_back({post_sunset_1, Color(210, 120, 60), "Sunset"});
         points.push_back({post_sunset_2, Color(170, 100, 70), "Post-Sunset"});
@@ -664,7 +678,7 @@ public:
         points.push_back({twilight_3, Color(80, 65, 75), "Civil Twilight"});
         
         // Evening progression - based on twilight end
-        double evening_start = twilight_3 + 0.25;
+        double evening_start = twilight_3 + 0.15;
         points.push_back({evening_start, Color(70, 60, 75), "Evening"});
         points.push_back({evening_start + 0.25, Color(65, 55, 70), "Evening"});
         points.push_back({evening_start + 0.5, Color(60, 50, 70), "Evening"});
@@ -763,46 +777,153 @@ public:
     }
     
     bool createSolidColorBitmap(Color color) {
-        BITMAPFILEHEADER fileHeader = {};
-        fileHeader.bfType = 0x4D42;
-        fileHeader.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + (screenWidth * screenHeight * 3);
-        fileHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+        return createWatermarkedWallpaper(color);
+    }
+    
+    bool createWatermarkedWallpaper(Color bgColor) {
+        HDC hdcScreen = GetDC(NULL);
+        HDC hdcMemory = CreateCompatibleDC(hdcScreen);
+        HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
+        SelectObject(hdcMemory, hBitmap);
         
-        BITMAPINFOHEADER infoHeader = {};
-        infoHeader.biSize = sizeof(BITMAPINFOHEADER);
-        infoHeader.biWidth = screenWidth;
-        infoHeader.biHeight = screenHeight;
-        infoHeader.biPlanes = 1;
-        infoHeader.biBitCount = 24;
-        infoHeader.biCompression = BI_RGB;
-        infoHeader.biSizeImage = screenWidth * screenHeight * 3;
+        HBRUSH hBrush = CreateSolidBrush(RGB(bgColor.r, bgColor.g, bgColor.b));
+        RECT fillRect = {0, 0, screenWidth, screenHeight};
+        FillRect(hdcMemory, &fillRect, hBrush);
+        DeleteObject(hBrush);
         
-        std::vector<unsigned char> pixels(screenWidth * screenHeight * 3);
-        for (int i = 0; i < screenWidth * screenHeight; i++) {
-            pixels[i * 3] = color.b;
-            pixels[i * 3 + 1] = color.g;
-            pixels[i * 3 + 2] = color.r;
+        Gdiplus::Graphics graphics(hdcMemory);
+        
+        std::string configPath = getConfigPath();
+        size_t lastSlash = configPath.find_last_of("\\/");
+        std::string watermarkPath;
+        if (lastSlash != std::string::npos) {
+            watermarkPath = configPath.substr(0, lastSlash + 1) + "Watermark.png";
+        } else {
+            watermarkPath = "Watermark.png";
+        }
+        std::wstring watermarkPathW(watermarkPath.begin(), watermarkPath.end());
+        
+        Gdiplus::Image watermarkImage(watermarkPathW.c_str());
+        if (watermarkImage.GetLastStatus() == Gdiplus::Ok) {
+            int watermarkWidth = watermarkImage.GetWidth();
+            int watermarkHeight = watermarkImage.GetHeight();
+            
+            int x = (screenWidth - watermarkWidth) / 2;
+            int y = (screenHeight - watermarkHeight) / 2 - 20;
+            
+            Gdiplus::ColorMatrix colorMatrix = {
+                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.1f, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.0f, 1.0f
+            };
+            
+            Gdiplus::ImageAttributes imageAttributes;
+            imageAttributes.SetColorMatrix(&colorMatrix, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
+            
+            graphics.DrawImage(&watermarkImage, 
+                              Gdiplus::Rect(x, y, watermarkWidth, watermarkHeight),
+                              0, 0, watermarkWidth, watermarkHeight,
+                              Gdiplus::UnitPixel, &imageAttributes);
         }
         
-        std::ofstream file(tempPath, std::ios::binary);
-        if (!file) return false;
+        if (!setWallpaperFromBitmap(hBitmap)) {
+            DeleteObject(hBitmap);
+            DeleteDC(hdcMemory);
+            ReleaseDC(NULL, hdcScreen);
+            return false;
+        }
         
-        file.write(reinterpret_cast<char*>(&fileHeader), sizeof(fileHeader));
-        file.write(reinterpret_cast<char*>(&infoHeader), sizeof(infoHeader));
-        file.write(reinterpret_cast<char*>(pixels.data()), pixels.size());
+        DeleteObject(hBitmap);
+        DeleteDC(hdcMemory);
+        ReleaseDC(NULL, hdcScreen);
         
-        file.close();
         return true;
     }
     
-    bool setWallpaper() {
-        int wideSize = MultiByteToWideChar(CP_UTF8, 0, tempPath.c_str(), -1, nullptr, 0);
-        std::wstring widePath(wideSize, 0);
-        MultiByteToWideChar(CP_UTF8, 0, tempPath.c_str(), -1, &widePath[0], wideSize);
+    bool setWallpaperFromBitmap(HBITMAP hBitmap) {
+        static std::wstring previousWallpaperPath;
         
-        BOOL result = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (PVOID)widePath.c_str(), 0);
-        return result == TRUE;
+        wchar_t tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        
+        SYSTEMTIME st;
+        GetSystemTime(&st);
+        wchar_t timeStr[64];
+        swprintf_s(timeStr, L"watermarked_%04d%02d%02d_%02d%02d%02d_%03d.bmp", 
+                   st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        std::wstring currentWallpaperPath = std::wstring(tempPath) + timeStr;
+        
+        CLSID bmpClsid;
+        GetEncoderClsid(L"image/bmp", &bmpClsid);
+        
+        Gdiplus::Bitmap bitmap(hBitmap, NULL);
+        if (bitmap.Save(currentWallpaperPath.c_str(), &bmpClsid, NULL) != Gdiplus::Ok) {
+            return false;
+        }
+        
+        bool result = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (LPVOID)currentWallpaperPath.c_str(), 0);
+        
+        if (result) {
+            Sleep(3000);
+            
+            if (!previousWallpaperPath.empty()) {
+                DeleteFileW(previousWallpaperPath.c_str());
+            }
+            cleanupOldWallpapers(currentWallpaperPath);
+            
+            previousWallpaperPath = currentWallpaperPath;
+        }
+        
+        return result;
     }
+    
+    void cleanupOldWallpapers(const std::wstring& currentFile) {
+        wchar_t tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        std::wstring searchPath = std::wstring(tempPath) + L"watermarked_*.bmp";
+        
+        WIN32_FIND_DATAW findData;
+        HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+        
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring fullPath = std::wstring(tempPath) + findData.cFileName;
+                if (fullPath != currentFile) {
+                    DeleteFileW(fullPath.c_str());
+                }
+            } while (FindNextFileW(hFind, &findData));
+            FindClose(hFind);
+        }
+    }
+    
+    int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+        UINT num = 0;
+        UINT size = 0;
+        
+        Gdiplus::ImageCodecInfo* pImageCodecInfo = NULL;
+        
+        Gdiplus::GetImageEncodersSize(&num, &size);
+        if (size == 0) return -1;
+        
+        pImageCodecInfo = (Gdiplus::ImageCodecInfo*)(malloc(size));
+        if (pImageCodecInfo == NULL) return -1;
+        
+        Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+        
+        for (UINT j = 0; j < num; ++j) {
+            if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+                *pClsid = pImageCodecInfo[j].Clsid;
+                free(pImageCodecInfo);
+                return j;
+            }
+        }
+        
+        free(pImageCodecInfo);
+        return -1;
+    }
+    
     
     DWORD getCurrentTaskbarColorSetting() {
         HKEY hKey;
@@ -858,12 +979,7 @@ public:
         Color currentColor = getCurrentColor();
         
         if (!createSolidColorBitmap(currentColor)) {
-            logMessage("Failed to create wallpaper bitmap");
-            return false;
-        }
-        
-        if (!setWallpaper()) {
-            logMessage("Failed to set wallpaper");
+            logMessage("Failed to create watermarked wallpaper");
             return false;
         }
         
@@ -874,20 +990,44 @@ public:
         return true;
     }
     
+    void createMessageWindow() {
+        // Create a hidden window to receive power management messages
+        WNDCLASSA wc = {0};
+        wc.lpfnWndProc = PowerEventWndProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = "TimeWallpaperPowerWindow";
+        RegisterClassA(&wc);
+        
+        g_hWnd = CreateWindowA("TimeWallpaperPowerWindow", "TimeWallpaper Power", 
+                              0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandle(NULL), this);
+    }
+
+    static LRESULT CALLBACK PowerEventWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        if (uMsg == WM_POWERBROADCAST) {
+            if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
+                g_justWokeUp = true;
+                // Get the TimeWallpaper instance from window data
+                TimeWallpaper* instance = (TimeWallpaper*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+                if (instance) {
+                    instance->logMessage("System resumed from sleep - updating wallpaper immediately");
+                }
+            }
+        }
+        return DefWindowProc(hWnd, uMsg, wParam, lParam);
+    }
+
     void run() {
-        if (config.service_mode) {
-            logMessage("Starting service mode...");
-        } else {
-            logMessage("Starting TimeWallpaper...");
-            logMessage("Wallpaper will update every " + std::to_string(config.update_interval_minutes) + " minute(s)");
+        logMessage("Starting TimeWallpaper...");
+        logMessage("Wallpaper will update every " + std::to_string(config.update_interval_minutes) + " minute(s)");
+        
+        // Create hidden window for power management messages
+        createMessageWindow();
+        if (g_hWnd) {
+            SetWindowLongPtr(g_hWnd, GWLP_USERDATA, (LONG_PTR)this);
+            logMessage("Power management enabled - will update on wake from sleep");
         }
         
         // Initial setup
-        // Do location detection for service mode here (after service is marked as running)
-        if (config.service_mode && config.auto_detect_location) {
-            logMessage("Auto-detecting location...");
-            autoDetectLocation();
-        }
         
         fetchSolarTimes();
         generateTodaysColors();
@@ -896,15 +1036,22 @@ public:
         std::string lastDate = getCurrentDate();
         
         while (true) {
-            // Check if service is being stopped
-            if (config.service_mode && g_ServiceStopEvent != INVALID_HANDLE_VALUE) {
-                if (WaitForSingleObject(g_ServiceStopEvent, 0) == WAIT_OBJECT_0) {
-                    logMessage("Service stop event received, exiting...");
-                    break;
-                }
+            // Process Windows messages for power events
+            MSG msg;
+            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
             }
             
             try {
+                // Check if we just woke up from sleep
+                bool forceUpdate = false;
+                if (g_justWokeUp) {
+                    logMessage("Wake from sleep detected - forcing wallpaper update");
+                    forceUpdate = true;
+                    g_justWokeUp = false;
+                }
+                
                 // Check if we need to refresh solar times (new day)
                 std::string currentDate = getCurrentDate();
                 if (currentDate != lastDate) {
@@ -912,9 +1059,10 @@ public:
                     fetchSolarTimes();
                     generateTodaysColors();
                     lastDate = currentDate;
+                    forceUpdate = true;
                 }
                 
-                if (updateWallpaper()) {
+                if (updateWallpaper() || forceUpdate) {
                     updateCount++;
                     
                     if (config.debug_mode || updateCount % 1 == 0) { // Show status updates
@@ -980,151 +1128,23 @@ public:
         }
     }
 
-    void setServiceMode(bool enabled) {
-        config.service_mode = enabled;
-    }
 };
 
-// Global app instance for service
-TimeWallpaper* g_AppInstance = nullptr;
-
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv);
-VOID WINAPI ServiceCtrlHandler(DWORD);
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam);
-
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
-    DWORD Status = E_FAIL;
-
-    g_StatusHandle = RegisterServiceCtrlHandlerA("TimeWallpaper", ServiceCtrlHandler);
-
-    if (g_StatusHandle == NULL) {
-        return;
-    }
-
-    ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
-    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwServiceSpecificExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
-
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        return;
-    }
-
-    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (g_ServiceStopEvent == NULL) {
-        g_ServiceStatus.dwControlsAccepted = 0;
-        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-        g_ServiceStatus.dwWin32ExitCode = GetLastError();
-        g_ServiceStatus.dwCheckPoint = 1;
-
-        if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-            return;
-        }
-        return;
-    }
-
-    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
-    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
-
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        return;
-    }
-
-    HANDLE hThread = CreateThread(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
-
-    WaitForSingleObject(hThread, INFINITE);
-
-    CloseHandle(g_ServiceStopEvent);
-
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 3;
-
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        return;
-    }
-}
-
-VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
-    switch (CtrlCode) {
-    case SERVICE_CONTROL_STOP:
-
-        if (g_ServiceStatus.dwCurrentState != SERVICE_RUNNING)
-            break;
-
-        g_ServiceStatus.dwControlsAccepted = 0;
-        g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
-        g_ServiceStatus.dwWin32ExitCode = 0;
-        g_ServiceStatus.dwCheckPoint = 4;
-
-        if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-            return;
-        }
-
-        SetEvent(g_ServiceStopEvent);
-        break;
-
-    default:
-        break;
-    }
-}
-
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
-    if (g_AppInstance) {
-        try {
-            g_AppInstance->run();
-        } catch (...) {
-            // Log any exceptions and set service to stopped
-            g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-            g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
-            g_ServiceStatus.dwServiceSpecificExitCode = 1;
-            SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-        }
-    }
-    return ERROR_SUCCESS;
-}
-
 int main(int argc, char* argv[]) {
-    if (argc > 1) {
-        std::string mode = argv[1];
-        if (mode == "--service" || mode == "-s") {
-            // Running as Windows Service
-            SERVICE_TABLE_ENTRY ServiceTable[] = {
-                {(LPSTR)"TimeWallpaper", (LPSERVICE_MAIN_FUNCTION)ServiceMain},
-                {NULL, NULL}
-            };
-
-            // Create app instance with service mode enabled  
-            TimeWallpaper app;
-            g_AppInstance = &app;
-            g_AppInstance->setServiceMode(true);
-
-            if (StartServiceCtrlDispatcher(ServiceTable) == FALSE) {
-                return GetLastError();
-            }
-            return 0;
-        }
-    }
-
-    // Regular application mode
     TimeWallpaper app;
     
     if (argc > 1) {
         std::string mode = argv[1];
         if (mode == "--help" || mode == "-h") {
             std::cout << "\nUsage:" << std::endl;
-            std::cout << "  TimeWallpaper.exe              - Updates wallpaper colors throughout the day (runs silently)" << std::endl;
-            std::cout << "  TimeWallpaper.exe --service    - Run as Windows Service (used by service manager)" << std::endl;
+            std::cout << "  TimeWallpaper.exe              - Updates wallpaper colors throughout the day" << std::endl;
             std::cout << "  TimeWallpaper.exe --help       - Show this help" << std::endl;
-            std::cout << "\nAll output is logged to log.txt file." << std::endl;
-            std::cout << "Edit config.ini to set your location coordinates." << std::endl;
-            std::cout << "\nTo install as Windows Service, run install_service.bat as administrator." << std::endl;
+            std::cout << "\nFeatures:" << std::endl;
+            std::cout << "  • Automatic location detection via IP geolocation" << std::endl;
+            std::cout << "  • Real astronomical data for your location" << std::endl;
+            std::cout << "  • Wake from sleep detection - updates immediately on resume" << std::endl;
+            std::cout << "  • All output is logged to log.txt file" << std::endl;
+            std::cout << "\nEdit config.ini to set manual location coordinates if needed." << std::endl;
             return 0;
         }
     }
