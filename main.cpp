@@ -35,6 +35,12 @@ struct SolarTimes {
     double civil_twilight_end;
     bool valid = false;
     std::string fetch_date;
+    std::string source; // "api", "cache", or "fallback"
+};
+
+struct SolarCache {
+    std::vector<SolarTimes> days; // 8 days: today + next 7 days
+    std::string last_updated;
 };
 
 struct Config {
@@ -62,6 +68,7 @@ private:
     
     std::vector<ColorPoint> todaysColors;
     SolarTimes todaysSolarTimes;
+    SolarCache solarCache;
     std::string lastFetchDate;
 
 public:
@@ -81,11 +88,15 @@ public:
             autoDetectLocation();
         }
         
-        logMessage("TimeWallpaper v2.0 - Solar Edition");
-        logMessage("===================================");
+        // Load existing solar cache
+        loadSolarCache();
+
+        logMessage("TimeWallpaper v2.0 - Solar Edition (8-Day Cache)");
+        logMessage("=================================================");
         logMessage("Location: " + config.location_name + " (" + std::to_string(config.latitude) + ", " + std::to_string(config.longitude) + ")");
         logMessage("Update interval: " + std::to_string(config.update_interval_minutes) + " minute(s)");
         logMessage("Screen: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+        logMessage("Solar cache: " + getSolarCachePath() + " (8-day storage)");
     }
     
     ~TimeWallpaper() {
@@ -367,59 +378,154 @@ public:
         return parseTimeString(timeStr);
     }
     
-    bool fetchSolarTimes(bool isRetry = false) {
-        std::string today = getCurrentDate();
-        if (todaysSolarTimes.valid && todaysSolarTimes.fetch_date == today) {
-            if (config.debug_mode) logMessage("Using cached solar times for " + today);
-            return true;
-        }
-        
+    bool fetchSolarTimesForDate(const std::string& targetDate, SolarTimes& solarTimes, bool isRetry = false) {
         std::stringstream urlBuilder;
-        urlBuilder << "https://api.sunrise-sunset.org/json?lat=" << config.latitude 
-                   << "&lng=" << config.longitude << "&formatted=0";
-        
+        urlBuilder << "https://api.sunrise-sunset.org/json?lat=" << config.latitude
+                   << "&lng=" << config.longitude << "&date=" << targetDate << "&formatted=0";
+
         std::string url = urlBuilder.str();
-        if (config.debug_mode) logMessage("Fetching solar times..." + std::string(isRetry ? " (retry)" : ""));
-        
+        if (config.debug_mode) logMessage("Fetching solar times for " + targetDate + "..." + std::string(isRetry ? " (retry)" : ""));
+
         std::string response = httpGetWithTimeout(url, isRetry ? 10000 : 5000);
-        
+
         if (response.empty()) {
             if (!isRetry) {
-                logMessage("API request timed out, retrying once...");
-                return fetchSolarTimes(true);  // Retry once
+                if (config.debug_mode) logMessage("API request timed out, retrying once...");
+                return fetchSolarTimesForDate(targetDate, solarTimes, true);
             }
-            logMessage("API Error: Request timed out. Using fallback times.");
-            return useFallbackSolarTimes();
+            if (config.debug_mode) logMessage("API Error: Request timed out for " + targetDate);
+            return false;
         }
-        
+
         if (response.find("\"status\":\"OK\"") == std::string::npos) {
-            logMessage("API Error: Invalid response. Using fallback times.");
-            return useFallbackSolarTimes();
+            if (config.debug_mode) logMessage("API Error: Invalid response for " + targetDate);
+            return false;
         }
-        
+
         try {
-            todaysSolarTimes.sunrise_hour = parseTimeFromJson(response, "\"sunrise\":");
-            todaysSolarTimes.sunset_hour = parseTimeFromJson(response, "\"sunset\":");
-            todaysSolarTimes.solar_noon_hour = parseTimeFromJson(response, "\"solar_noon\":");
-            todaysSolarTimes.civil_twilight_begin = parseTimeFromJson(response, "\"civil_twilight_begin\":");
-            todaysSolarTimes.civil_twilight_end = parseTimeFromJson(response, "\"civil_twilight_end\":");
-            
-            if (todaysSolarTimes.sunrise_hour > 0 && todaysSolarTimes.sunset_hour > 0) {
-                todaysSolarTimes.valid = true;
-                todaysSolarTimes.fetch_date = today;
-                
+            solarTimes.sunrise_hour = parseTimeFromJson(response, "\"sunrise\":");
+            solarTimes.sunset_hour = parseTimeFromJson(response, "\"sunset\":");
+            solarTimes.solar_noon_hour = parseTimeFromJson(response, "\"solar_noon\":");
+            solarTimes.civil_twilight_begin = parseTimeFromJson(response, "\"civil_twilight_begin\":");
+            solarTimes.civil_twilight_end = parseTimeFromJson(response, "\"civil_twilight_end\":");
+
+            if (solarTimes.sunrise_hour > 0 && solarTimes.sunset_hour > 0) {
+                solarTimes.valid = true;
+                solarTimes.fetch_date = targetDate;
+                solarTimes.source = "api";
+
                 if (config.debug_mode) {
-                    logMessage("Solar times fetched successfully:");
-                    logMessage("  Sunrise: " + formatHour(todaysSolarTimes.sunrise_hour));
-                    logMessage("  Sunset: " + formatHour(todaysSolarTimes.sunset_hour));
+                    logMessage("Solar times fetched successfully for " + targetDate + ":");
+                    logMessage("  Sunrise: " + formatHour(solarTimes.sunrise_hour));
+                    logMessage("  Sunset: " + formatHour(solarTimes.sunset_hour));
                 }
-                
+
                 return true;
             }
         } catch (...) {
-            logMessage("JSON parsing error. Using fallback times.");
+            if (config.debug_mode) logMessage("JSON parsing error for " + targetDate);
         }
-        
+
+        return false;
+    }
+
+    bool fetchEightDaySolarData() {
+        // Initialize cache with 8 days if not already sized
+        if (solarCache.days.size() != 8) {
+            solarCache.days.resize(8);
+        }
+
+        int successCount = 0;
+
+        // Fetch data for today and next 7 days (8 days total)
+        for (int dayOffset = 0; dayOffset < 8; dayOffset++) {
+            std::string targetDate = getDateOffset(dayOffset);
+            if (fetchSolarTimesForDate(targetDate, solarCache.days[dayOffset])) {
+                successCount++;
+            }
+        }
+
+        if (successCount > 0) {
+            solarCache.last_updated = getCurrentDate();
+            saveSolarCache();
+            logMessage("Updated solar cache with " + std::to_string(successCount) + "/8 days from API");
+            return true;
+        }
+
+        logMessage("Failed to fetch any solar data from API");
+        return false;
+    }
+
+    SolarTimes* findCachedDataForDate(const std::string& targetDate) {
+        for (size_t i = 0; i < solarCache.days.size(); i++) {
+            if (solarCache.days[i].fetch_date == targetDate) {
+                return &solarCache.days[i];
+            }
+        }
+        return nullptr;
+    }
+
+    bool shouldUpdateCache() {
+        std::string today = getCurrentDate();
+
+        // Only update once per day - if we already updated today, don't update again
+        if (solarCache.last_updated == today) {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool fetchSolarTimes(bool forceRefresh = false) {
+        std::string today = getCurrentDate();
+
+        // Load cache first
+        loadSolarCache();
+
+        // Check if we have valid cached data for today
+        SolarTimes* todaysData = findCachedDataForDate(today);
+        if (!forceRefresh && todaysData && todaysData->valid) {
+            todaysSolarTimes = *todaysData;
+            if (config.debug_mode) logMessage("Using cached solar times for " + today + " (source: " + todaysData->source + ")");
+            return true;
+        }
+
+        // Only attempt API fetch if we haven't already updated today
+        if (shouldUpdateCache()) {
+            logMessage("Attempting daily solar data update for " + today + " (8 days)");
+            if (fetchEightDaySolarData()) {
+                // Use today's data if available
+                todaysData = findCachedDataForDate(today);
+                if (todaysData && todaysData->valid) {
+                    todaysSolarTimes = *todaysData;
+                    return true;
+                }
+            }
+        } else {
+            if (config.debug_mode) logMessage("Skipping API update - already updated today");
+        }
+
+        // Fall back to cached data if available (any cached data for today)
+        todaysData = findCachedDataForDate(today);
+        if (todaysData && todaysData->valid) {
+            todaysSolarTimes = *todaysData;
+            logMessage("Using cached solar times for " + today + " (source: " + todaysData->source + ")");
+            return true;
+        }
+
+        // Check for any available cached data as backup (search all 8 days)
+        for (size_t i = 0; i < solarCache.days.size(); i++) {
+            if (solarCache.days[i].valid) {
+                todaysSolarTimes = solarCache.days[i];
+                todaysSolarTimes.fetch_date = today;
+                todaysSolarTimes.source = "cache-backup-day" + std::to_string(i);
+                logMessage("Using cached solar times from day " + std::to_string(i) + " as backup for " + today);
+                return true;
+            }
+        }
+
+        // Last resort: use January averages
+        logMessage("No cached data available. Using fallback times.");
         return useFallbackSolarTimes();
     }
     
@@ -431,7 +537,8 @@ public:
         todaysSolarTimes.civil_twilight_end = 17.6;
         todaysSolarTimes.valid = false;
         todaysSolarTimes.fetch_date = getCurrentDate();
-        
+        todaysSolarTimes.source = "fallback";
+
         logMessage("Using fallback solar times (NYC January average)");
         return false;
     }
@@ -439,12 +546,119 @@ public:
     std::string getCurrentDate() {
         time_t now = time(0);
         tm* timeinfo = localtime(&now);
-        
+
         std::stringstream ss;
-        ss << (timeinfo->tm_year + 1900) << "-" 
+        ss << (timeinfo->tm_year + 1900) << "-"
            << std::setfill('0') << std::setw(2) << (timeinfo->tm_mon + 1) << "-"
            << std::setw(2) << timeinfo->tm_mday;
         return ss.str();
+    }
+
+    std::string getDateOffset(int dayOffset) {
+        time_t now = time(0);
+        now += dayOffset * 24 * 60 * 60; // Add/subtract days
+        tm* timeinfo = localtime(&now);
+
+        std::stringstream ss;
+        ss << (timeinfo->tm_year + 1900) << "-"
+           << std::setfill('0') << std::setw(2) << (timeinfo->tm_mon + 1) << "-"
+           << std::setw(2) << timeinfo->tm_mday;
+        return ss.str();
+    }
+
+    std::string getSolarCachePath() {
+        std::string configPath = getConfigPath();
+        size_t lastSlash = configPath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            return configPath.substr(0, lastSlash + 1) + "solar_cache.txt";
+        }
+        return "solar_cache.txt";
+    }
+
+    void saveSolarCache() {
+        std::string cachePath = getSolarCachePath();
+        std::ofstream cacheFile(cachePath);
+        if (!cacheFile.is_open()) {
+            if (config.debug_mode) logMessage("Failed to save solar cache to " + cachePath);
+            return;
+        }
+
+        cacheFile << "# TimeWallpaper Solar Cache - Eight Day Data (Today + Next 7 Days)" << std::endl;
+        cacheFile << "last_updated=" << solarCache.last_updated << std::endl;
+        cacheFile << std::endl;
+
+        // Save all 8 days of data
+        for (size_t i = 0; i < solarCache.days.size(); i++) {
+            const SolarTimes& dayData = solarCache.days[i];
+
+            cacheFile << "[day" << i << "]" << std::endl;
+            cacheFile << "date=" << dayData.fetch_date << std::endl;
+            cacheFile << "sunrise=" << std::fixed << std::setprecision(6) << dayData.sunrise_hour << std::endl;
+            cacheFile << "sunset=" << std::fixed << std::setprecision(6) << dayData.sunset_hour << std::endl;
+            cacheFile << "solar_noon=" << std::fixed << std::setprecision(6) << dayData.solar_noon_hour << std::endl;
+            cacheFile << "civil_twilight_begin=" << std::fixed << std::setprecision(6) << dayData.civil_twilight_begin << std::endl;
+            cacheFile << "civil_twilight_end=" << std::fixed << std::setprecision(6) << dayData.civil_twilight_end << std::endl;
+            cacheFile << "valid=" << (dayData.valid ? "true" : "false") << std::endl;
+            cacheFile << "source=" << dayData.source << std::endl;
+            cacheFile << std::endl;
+        }
+
+        cacheFile.close();
+        if (config.debug_mode) logMessage("Solar cache saved successfully (8 days)");
+    }
+
+    bool loadSolarCache() {
+        std::string cachePath = getSolarCachePath();
+        std::ifstream cacheFile(cachePath);
+        if (!cacheFile.is_open()) {
+            if (config.debug_mode) logMessage("No existing solar cache found");
+            return false;
+        }
+
+        // Initialize with 8 empty entries
+        solarCache.days.clear();
+        solarCache.days.resize(8);
+
+        std::string line;
+        int currentDayIndex = -1;
+
+        while (std::getline(cacheFile, line)) {
+            if (line.empty() || line[0] == '#') continue;
+
+            // Check for day sections [day0], [day1], etc.
+            if (line.substr(0, 4) == "[day" && line.back() == ']') {
+                std::string dayStr = line.substr(4, line.length() - 5);
+                currentDayIndex = std::stoi(dayStr);
+                if (currentDayIndex < 0 || currentDayIndex >= 8) {
+                    currentDayIndex = -1; // Invalid index
+                }
+                continue;
+            }
+
+            size_t equalPos = line.find('=');
+            if (equalPos != std::string::npos) {
+                std::string key = line.substr(0, equalPos);
+                std::string value = line.substr(equalPos + 1);
+
+                if (key == "last_updated") {
+                    solarCache.last_updated = value;
+                } else if (currentDayIndex >= 0 && currentDayIndex < 8) {
+                    SolarTimes& currentTimes = solarCache.days[currentDayIndex];
+                    if (key == "date") currentTimes.fetch_date = value;
+                    else if (key == "sunrise") currentTimes.sunrise_hour = std::stod(value);
+                    else if (key == "sunset") currentTimes.sunset_hour = std::stod(value);
+                    else if (key == "solar_noon") currentTimes.solar_noon_hour = std::stod(value);
+                    else if (key == "civil_twilight_begin") currentTimes.civil_twilight_begin = std::stod(value);
+                    else if (key == "civil_twilight_end") currentTimes.civil_twilight_end = std::stod(value);
+                    else if (key == "valid") currentTimes.valid = (value == "true");
+                    else if (key == "source") currentTimes.source = value;
+                }
+            }
+        }
+
+        cacheFile.close();
+        if (config.debug_mode) logMessage("Solar cache loaded successfully (8 days)");
+        return true;
     }
     
     void generateTodaysColors() {
@@ -514,7 +728,7 @@ public:
         std::vector<ColorPoint> points;
         
         // Night and early morning
-        points.push_back({0.0, Color(8, 8, 15), "Deep Night"});
+        points.push_back({0.0, Color(6, 6, 8), "Deep Night"});
         points.push_back({std::max(1.0, sunrise - 3.0), Color(10, 10, 25), "Pre-Dawn"});
         points.push_back({std::max(2.0, sunrise - 1.5), Color(15, 15, 35), "Early Dawn"});
         points.push_back({std::max(3.0, sunrise - 1.0), Color(35, 15, 45), "Early Dawn"});
@@ -561,22 +775,22 @@ public:
         points.push_back({post_sunset_3, Color(140, 90, 75), "Post-Sunset"});
         points.push_back({twilight_1, Color(110, 70, 80), "Civil Twilight"});
         points.push_back({twilight_2, Color(75, 65, 80), "Civil Twilight"});
-        points.push_back({twilight_3, Color(60, 55, 75), "Civil Twilight"});
+        points.push_back({twilight_3, Color(55, 45, 70), "Civil Twilight"});
         
         // Evening progression - based on twilight end
         double evening_start = twilight_3 + 0.25;
-        points.push_back({evening_start, Color(50, 50, 70), "Evening"});
-        points.push_back({evening_start + 0.25, Color(50, 45, 70), "Evening"});
-        points.push_back({evening_start + 0.5, Color(40, 30, 50), "Evening"});
-        points.push_back({evening_start + 0.75, Color(40, 55, 50), "Evening"});
-        points.push_back({evening_start + 1.0, Color(35, 25, 55), "Evening"});
-        points.push_back({evening_start + 1.25, Color(35, 25, 40), "Evening"});
-        points.push_back({evening_start + 1.5, Color(30, 25, 35), "Evening"});
-        points.push_back({evening_start + 1.75, Color(28, 24, 30), "Late Evening"});
-        points.push_back({evening_start + 2.25, Color(26, 22, 30), "Late Evening"});
-        points.push_back({evening_start + 2.75, Color(15, 17, 27), "Late Evening"});
-        points.push_back({evening_start + 3.25, Color(9, 9, 25), "Night"});
-        points.push_back({23.99, Color(8, 8, 25), "Night"});
+        points.push_back({evening_start, Color(45, 40, 60), "Evening"});
+        points.push_back({evening_start + 0.25, Color(40, 35, 50), "Evening"});
+        points.push_back({evening_start + 0.5, Color(35, 30, 45), "Evening"});
+        points.push_back({evening_start + 0.75, Color(30, 25, 35), "Evening"});
+        points.push_back({evening_start + 1.0, Color(25, 20, 35), "Evening"});
+        points.push_back({evening_start + 1.25, Color(25, 20, 30), "Evening"});
+        points.push_back({evening_start + 1.5, Color(22, 18, 25), "Evening"});
+        points.push_back({evening_start + 1.75, Color(20, 15, 25), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(15, 12, 20), "Late Evening"});
+        points.push_back({evening_start + 2.75, Color(12, 10, 18), "Late Evening"});
+        points.push_back({evening_start + 3.25, Color(10, 10, 14), "Night"});
+        points.push_back({23.99, Color(8, 8, 12), "Night"});
         
         // Fix times outside 0-24 range
         for (auto& point : points) {
@@ -658,8 +872,8 @@ public:
         
         points.push_back({late_afternoon_start, Color(170, 210, 230), "Late Afternoon"});
         points.push_back({pre_sunset_start, Color(170, 210, 230), "Late Afternoon"});
-        points.push_back({pre_sunset_mid, Color(175, 200, 230), "Pre-Sunset"});
-        points.push_back({pre_sunset_end, Color(180, 200, 225), "Pre-Sunset"});
+        points.push_back({pre_sunset_mid, Color(175, 200, 225), "Pre-Sunset"});
+        points.push_back({pre_sunset_end, Color(180, 195, 220), "Pre-Sunset"});
         points.push_back({sunset_time, Color(230, 140, 70), "Sunset"});
         
         // Post-sunset to evening - ensure monotonic progression
@@ -668,18 +882,18 @@ public:
         double post_sunset_3 = post_sunset_2 + 0.1;
         double twilight_1 = post_sunset_3 + 0.1;
         double twilight_2 = twilight_1 + 0.1;
-        double twilight_3 = twilight_2 + 0.15;
+        double twilight_3 = twilight_2 + 0.1;
         
-        points.push_back({post_sunset_1, Color(210, 120, 60), "Sunset"});
-        points.push_back({post_sunset_2, Color(170, 100, 70), "Post-Sunset"});
-        points.push_back({post_sunset_3, Color(140, 90, 75), "Post-Sunset"});
-        points.push_back({twilight_1, Color(110, 80, 80), "Civil Twilight"});
-        points.push_back({twilight_2, Color(95, 75, 80), "Civil Twilight"});
-        points.push_back({twilight_3, Color(80, 65, 75), "Civil Twilight"});
+        points.push_back({post_sunset_1, Color(210, 120, 70), "Sunset"});
+        points.push_back({post_sunset_2, Color(170, 100, 75), "Post-Sunset"});
+        points.push_back({post_sunset_3, Color(140, 90, 80), "Post-Sunset"});
+        points.push_back({twilight_1, Color(110, 80, 85), "Civil Twilight"});
+        points.push_back({twilight_2, Color(95, 75, 95), "Civil Twilight"});
+        points.push_back({twilight_3, Color(80, 65, 85), "Civil Twilight"});
         
         // Evening progression - based on twilight end
-        double evening_start = twilight_3 + 0.15;
-        points.push_back({evening_start, Color(70, 60, 75), "Evening"});
+        double evening_start = twilight_3 + 0.1;
+        points.push_back({evening_start, Color(65, 60, 75), "Evening"});
         points.push_back({evening_start + 0.25, Color(65, 55, 70), "Evening"});
         points.push_back({evening_start + 0.5, Color(60, 50, 70), "Evening"});
         points.push_back({evening_start + 0.75, Color(55, 45, 65), "Evening"});
@@ -925,68 +1139,16 @@ public:
     }
     
     
-    DWORD getCurrentTaskbarColorSetting() {
-        HKEY hKey;
-        DWORD colorPrevalence = 0;
-        DWORD dataSize = sizeof(DWORD);
-        
-        if (RegOpenKeyExA(HKEY_CURRENT_USER, 
-                         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            RegQueryValueExA(hKey, "ColorPrevalence", NULL, NULL, (LPBYTE)&colorPrevalence, &dataSize);
-            RegCloseKey(hKey);
-        }
-        
-        return colorPrevalence;
-    }
     
-    bool updateAccentColor(Color color) {
-        DWORD currentTaskbarSetting = getCurrentTaskbarColorSetting();
-        
-        DWORD accentColor = (0xFF000000) | (color.r << 16) | (color.g << 8) | color.b;
-        
-        HKEY hKey;
-        bool success = true;
-        
-        if (RegOpenKeyExA(HKEY_CURRENT_USER, 
-                         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 
-                         0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-            
-            if (RegSetValueExA(hKey, "AccentColor", 0, REG_DWORD, 
-                              (const BYTE*)&accentColor, sizeof(accentColor)) != ERROR_SUCCESS) {
-                success = false;
-            }
-            
-            if (RegSetValueExA(hKey, "ColorPrevalence", 0, REG_DWORD, 
-                              (const BYTE*)&currentTaskbarSetting, sizeof(currentTaskbarSetting)) != ERROR_SUCCESS) {
-                success = false;
-            }
-            
-            RegCloseKey(hKey);
-        } else {
-            success = false;
-        }
-        
-        if (success) {
-            SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 
-                               (LPARAM)"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
-        }
-        
-        return success;
-    }
     
     bool updateWallpaper() {
         Color currentColor = getCurrentColor();
-        
+
         if (!createSolidColorBitmap(currentColor)) {
             logMessage("Failed to create watermarked wallpaper");
             return false;
         }
-        
-        if (!updateAccentColor(currentColor)) {
-            logMessage("Failed to update accent color");
-        }
-        
+
         return true;
     }
     
@@ -1047,7 +1209,37 @@ public:
                 // Check if we just woke up from sleep
                 bool forceUpdate = false;
                 if (g_justWokeUp) {
-                    logMessage("Wake from sleep detected - forcing wallpaper update");
+                    logMessage("Wake from sleep detected - checking cached data first");
+
+                    // Try to use cached data before forcing API refresh
+                    std::string today = getCurrentDate();
+                    loadSolarCache();
+
+                    SolarTimes* todaysData = findCachedDataForDate(today);
+                    if (todaysData && todaysData->valid) {
+                        todaysSolarTimes = *todaysData;
+                        logMessage("Using cached solar data after wake (source: " + todaysData->source + ")");
+                    } else {
+                        // Use any available cached data as backup from the 8-day cache
+                        bool foundBackup = false;
+                        for (size_t i = 0; i < solarCache.days.size(); i++) {
+                            if (solarCache.days[i].valid) {
+                                todaysSolarTimes = solarCache.days[i];
+                                todaysSolarTimes.fetch_date = today;
+                                todaysSolarTimes.source = "cache-wake-day" + std::to_string(i);
+                                logMessage("Using cached data from day " + std::to_string(i) + " after wake as backup");
+                                foundBackup = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundBackup) {
+                            // No cached data available, try to fetch fresh data
+                            logMessage("No cached data available after wake - attempting fresh fetch");
+                            fetchSolarTimes(true); // Force refresh
+                        }
+                    }
+
                     forceUpdate = true;
                     g_justWokeUp = false;
                 }
@@ -1061,6 +1253,7 @@ public:
                     lastDate = currentDate;
                     forceUpdate = true;
                 }
+
                 
                 if (updateWallpaper() || forceUpdate) {
                     updateCount++;
@@ -1071,12 +1264,13 @@ public:
                         Color currentColor = getCurrentColor();
                         std::string period = getCurrentPeriod();
                         
-                        std::string statusMsg = "[" + std::to_string(updateCount) + "] " 
+                        std::string statusMsg = "[" + std::to_string(updateCount) + "] "
                                                + formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0))
-                                               + " | " + period 
-                                               + " | Wallpaper RGB(" + std::to_string(currentColor.r) + ", " 
-                                               + std::to_string(currentColor.g) + ", " 
-                                               + std::to_string(currentColor.b) + ")";
+                                               + " | " + period
+                                               + " | RGB(" + std::to_string(currentColor.r) + ", "
+                                               + std::to_string(currentColor.g) + ", "
+                                               + std::to_string(currentColor.b) + ")"
+                                               + " | Source: " + todaysSolarTimes.source;
                         
                         logMessage(statusMsg);
                     }
