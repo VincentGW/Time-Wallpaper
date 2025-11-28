@@ -1,6 +1,8 @@
 #include <Windows.h>
+#include <SFML/Graphics.hpp>
 #include <iostream>
 #include <ctime>
+#include <cmath>
 #include <string>
 #include <fstream>
 #include <vector>
@@ -9,14 +11,10 @@
 #include <thread>
 #include <iomanip>
 #include <sstream>
+#include <memory>
 #include <wininet.h>
-#include <comdef.h>
-#include <combaseapi.h>
-#include <gdiplus.h>
 
 #pragma comment(lib, "wininet.lib")
-#pragma comment(lib, "ole32.lib")
-#pragma comment(lib, "gdiplus.lib")
 
 // Power management for wake-from-sleep detection
 HWND g_hWnd = NULL;
@@ -54,55 +52,181 @@ struct Config {
 
 class TimeWallpaper {
 private:
-    int screenWidth, screenHeight;
-    std::string tempPath;
+    struct MonitorWindow {
+        std::unique_ptr<sf::RenderWindow> window;
+        sf::Sprite watermarkSprite;
+        int x, y, width, height;
+    };
+
     Config config;
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    
+    std::vector<MonitorWindow> monitors;
+    sf::Texture watermarkTexture;
+    bool hasWatermark;
+    time_t lastAccentColorUpdate;
+
     struct ColorPoint {
         double hour;
         Color color;
         std::string period;
     };
-    
+
     std::vector<ColorPoint> todaysColors;
     SolarTimes todaysSolarTimes;
     SolarCache solarCache;
     std::string lastFetchDate;
 
+    static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
+        auto* monitors = reinterpret_cast<std::vector<MonitorWindow>*>(dwData);
+
+        MONITORINFO info;
+        info.cbSize = sizeof(MONITORINFO);
+        GetMonitorInfo(hMonitor, &info);
+
+        MonitorWindow mw;
+        // Use work area to exclude taskbar
+        mw.x = info.rcWork.left;
+        mw.y = info.rcWork.top;
+        mw.width = info.rcWork.right - info.rcWork.left;
+        mw.height = info.rcWork.bottom - info.rcWork.top;
+
+        monitors->push_back(std::move(mw));
+        return TRUE;
+    }
+
 public:
-    TimeWallpaper() {
-        Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
-        
-        screenWidth = GetSystemMetrics(SM_CXSCREEN);
-        screenHeight = GetSystemMetrics(SM_CYSCREEN);
-        
-        char tempDir[MAX_PATH];
-        GetTempPathA(MAX_PATH, tempDir);
-        tempPath = std::string(tempDir) + "time_wallpaper.bmp";
-        
+    TimeWallpaper() : hasWatermark(false), lastAccentColorUpdate(0) {
+        std::cout << "Initializing TimeWallpaper..." << std::endl;
+
         loadConfig();
-        
+
         if (config.auto_detect_location) {
             autoDetectLocation();
         }
-        
+
         // Load existing solar cache
         loadSolarCache();
 
-        logMessage("TimeWallpaper v2.0 - Solar Edition (8-Day Cache)");
+        // Load watermark
+        loadWatermark();
+
+        // Enumerate all monitors
+        EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, reinterpret_cast<LPARAM>(&monitors));
+
+        std::cout << "Found " << monitors.size() << " monitor(s)" << std::endl;
+
+        // Create a window for each monitor
+        for (size_t i = 0; i < monitors.size(); i++) {
+            auto& m = monitors[i];
+
+            std::cout << "Monitor " << i << ": " << m.width << "x" << m.height
+                      << " at (" << m.x << ", " << m.y << ")" << std::endl;
+
+            // Create window for this monitor
+            m.window = std::make_unique<sf::RenderWindow>(
+                sf::VideoMode(m.width, m.height),
+                "TimeWallpaper",
+                sf::Style::None
+            );
+            m.window->setFramerateLimit(60);
+            m.window->setPosition(sf::Vector2i(m.x, m.y));
+
+            // Hide from taskbar by setting as a tool window
+            HWND hwnd = m.window->getSystemHandle();
+            LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+            ShowWindow(hwnd, SW_HIDE);
+            ShowWindow(hwnd, SW_SHOW);
+
+            // Set up watermark sprite for this monitor if watermark exists
+            if (hasWatermark) {
+                m.watermarkSprite.setTexture(watermarkTexture);
+
+                // Center watermark on this monitor
+                sf::FloatRect bounds = m.watermarkSprite.getLocalBounds();
+                m.watermarkSprite.setOrigin(bounds.width / 2.0f, bounds.height / 2.0f);
+                m.watermarkSprite.setPosition(m.width / 2.0f, m.height / 2.0f);
+
+                // Set transparency (10% opacity = 25/255)
+                m.watermarkSprite.setColor(sf::Color(255, 255, 255, 25));
+            }
+        }
+
+        std::cout << "\n=== TimeWallpaper v3.0 - SFML Edition ===" << std::endl;
+        std::cout << "=================================================" << std::endl;
+        std::cout << "Location: " << config.location_name << " (" << config.latitude << ", " << config.longitude << ")" << std::endl;
+        std::cout << "Update interval: " << config.update_interval_minutes << " minute(s)" << std::endl;
+        std::cout << "Monitors: " << monitors.size() << std::endl;
+        std::cout << "Solar cache: " << getSolarCachePath() << " (8-day storage)" << std::endl;
+
+        logMessage("TimeWallpaper v3.0 - SFML Edition (8-Day Cache)");
         logMessage("=================================================");
         logMessage("Location: " + config.location_name + " (" + std::to_string(config.latitude) + ", " + std::to_string(config.longitude) + ")");
         logMessage("Update interval: " + std::to_string(config.update_interval_minutes) + " minute(s)");
-        logMessage("Screen: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+        logMessage("Monitors: " + std::to_string(monitors.size()));
         logMessage("Solar cache: " + getSolarCachePath() + " (8-day storage)");
     }
-    
+
     ~TimeWallpaper() {
-        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (auto& m : monitors) {
+            if (m.window && m.window->isOpen()) {
+                m.window->close();
+            }
+        }
     }
     
+    void setWindowsAccentColor(const Color& bgColor) {
+        // Determine brightness to decide whether to blend with black or white
+        int brightness = (bgColor.r + bgColor.g + bgColor.b) / 3;
+
+        Color accentColor;
+        float blendAmount = 0.15f; // 15% opacity overlay
+
+        if (brightness > 128) {
+            // Light background - overlay black at 15% opacity
+            accentColor.r = (unsigned char)(bgColor.r * (1.0f - blendAmount));
+            accentColor.g = (unsigned char)(bgColor.g * (1.0f - blendAmount));
+            accentColor.b = (unsigned char)(bgColor.b * (1.0f - blendAmount));
+        } else {
+            // Dark background - overlay white at 15% opacity
+            accentColor.r = (unsigned char)(bgColor.r * (1.0f - blendAmount) + 255 * blendAmount);
+            accentColor.g = (unsigned char)(bgColor.g * (1.0f - blendAmount) + 255 * blendAmount);
+            accentColor.b = (unsigned char)(bgColor.b * (1.0f - blendAmount) + 255 * blendAmount);
+        }
+
+        // Format the color as ABGR DWORD (Windows format)
+        DWORD colorValue = 0xFF000000 | (accentColor.b << 16) | (accentColor.g << 8) | accentColor.r;
+
+        // Update registry directly without restarting explorer
+        HKEY hKey;
+
+        // Set DWM accent color
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\Windows\\DWM", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+            RegSetValueExA(hKey, "AccentColor", 0, REG_DWORD, (const BYTE*)&colorValue, sizeof(DWORD));
+            RegSetValueExA(hKey, "ColorizationColor", 0, REG_DWORD, (const BYTE*)&colorValue, sizeof(DWORD));
+            RegSetValueExA(hKey, "ColorizationAfterglow", 0, REG_DWORD, (const BYTE*)&colorValue, sizeof(DWORD));
+            RegSetValueExA(hKey, "AccentColorMenu", 0, REG_DWORD, (const BYTE*)&colorValue, sizeof(DWORD));
+
+            // Create accent palette (8 color variations)
+            BYTE palette[32];
+            for (int i = 0; i < 8; i++) {
+                int factor = 100 + (i - 4) * 10;
+                palette[i * 4 + 0] = std::min(255, std::max(0, (accentColor.r * factor) / 100));
+                palette[i * 4 + 1] = std::min(255, std::max(0, (accentColor.g * factor) / 100));
+                palette[i * 4 + 2] = std::min(255, std::max(0, (accentColor.b * factor) / 100));
+                palette[i * 4 + 3] = 255;
+            }
+            RegSetValueExA(hKey, "AccentPalette", 0, REG_BINARY, palette, 32);
+
+            RegCloseKey(hKey);
+        }
+
+        // Notify system of color change
+        SendMessageTimeout(HWND_BROADCAST, WM_DWMCOLORIZATIONCOLORCHANGED, colorValue, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+        SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, nullptr);
+
+        logMessage("Accent color updated: RGB(" + std::to_string(accentColor.r) + ", " + std::to_string(accentColor.g) + ", " + std::to_string(accentColor.b) + ")");
+    }
+
     std::string getConfigPath() {
         // Get the directory where the executable is located
         char exePath[MAX_PATH];
@@ -822,8 +946,9 @@ public:
     Color getCurrentColor() {
         time_t now = time(0);
         tm* timeinfo = localtime(&now);
-        double currentHour = timeinfo->tm_hour + (timeinfo->tm_min / 60.0);
-        
+        // Include seconds for 15-second granularity
+        double currentHour = timeinfo->tm_hour + (timeinfo->tm_min / 60.0) + (timeinfo->tm_sec / 3600.0);
+
         return getColorForHour(currentHour);
     }
     
@@ -896,15 +1021,15 @@ public:
         points.push_back({evening_start, Color(65, 60, 75), "Evening"});
         points.push_back({evening_start + 0.25, Color(65, 55, 70), "Evening"});
         points.push_back({evening_start + 0.5, Color(60, 50, 70), "Evening"});
-        points.push_back({evening_start + 0.75, Color(55, 45, 65), "Evening"});
-        points.push_back({evening_start + 1.0, Color(50, 40, 65), "Evening"});
-        points.push_back({evening_start + 1.25, Color(45, 35, 60), "Evening"});
-        points.push_back({evening_start + 1.5, Color(40, 30, 55), "Evening"});
-        points.push_back({evening_start + 1.75, Color(38, 28, 52), "Late Evening"});
-        points.push_back({evening_start + 2.25, Color(30, 22, 48), "Late Evening"});
+        points.push_back({evening_start + 0.75, Color(50, 45, 65), "Evening"});
+        points.push_back({evening_start + 1.0, Color(45, 40, 65), "Evening"});
+        points.push_back({evening_start + 1.25, Color(40, 35, 60), "Evening"});
+        points.push_back({evening_start + 1.5, Color(35, 30, 55), "Evening"});
+        points.push_back({evening_start + 1.75, Color(32, 28, 52), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(328, 22, 48), "Late Evening"});
         points.push_back({evening_start + 2.75, Color(22, 17, 42), "Late Evening"});
         points.push_back({evening_start + 3.25, Color(15, 12, 35), "Night"});
-        points.push_back({23.99, Color(8, 8, 25), "Night"});
+        points.push_back({23.99, Color(8, 8, 20), "Night"});
         
         // Fix times outside 0-24 range
         for (auto& point : points) {
@@ -990,23 +1115,7 @@ public:
         return ss.str();
     }
     
-    bool createSolidColorBitmap(Color color) {
-        return createWatermarkedWallpaper(color);
-    }
-    
-    bool createWatermarkedWallpaper(Color bgColor) {
-        HDC hdcScreen = GetDC(NULL);
-        HDC hdcMemory = CreateCompatibleDC(hdcScreen);
-        HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
-        SelectObject(hdcMemory, hBitmap);
-        
-        HBRUSH hBrush = CreateSolidBrush(RGB(bgColor.r, bgColor.g, bgColor.b));
-        RECT fillRect = {0, 0, screenWidth, screenHeight};
-        FillRect(hdcMemory, &fillRect, hBrush);
-        DeleteObject(hBrush);
-        
-        Gdiplus::Graphics graphics(hdcMemory);
-        
+    void loadWatermark() {
         std::string configPath = getConfigPath();
         size_t lastSlash = configPath.find_last_of("\\/");
         std::string watermarkPath;
@@ -1015,141 +1124,39 @@ public:
         } else {
             watermarkPath = "Watermark.png";
         }
-        std::wstring watermarkPathW(watermarkPath.begin(), watermarkPath.end());
-        
-        Gdiplus::Image watermarkImage(watermarkPathW.c_str());
-        if (watermarkImage.GetLastStatus() == Gdiplus::Ok) {
-            int watermarkWidth = watermarkImage.GetWidth();
-            int watermarkHeight = watermarkImage.GetHeight();
-            
-            int x = (screenWidth - watermarkWidth) / 2;
-            int y = (screenHeight - watermarkHeight) / 2 - 20;
-            
-            Gdiplus::ColorMatrix colorMatrix = {
-                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 0.0f, 0.1f, 0.0f,
-                0.0f, 0.0f, 0.0f, 0.0f, 1.0f
-            };
-            
-            Gdiplus::ImageAttributes imageAttributes;
-            imageAttributes.SetColorMatrix(&colorMatrix, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
-            
-            graphics.DrawImage(&watermarkImage, 
-                              Gdiplus::Rect(x, y, watermarkWidth, watermarkHeight),
-                              0, 0, watermarkWidth, watermarkHeight,
-                              Gdiplus::UnitPixel, &imageAttributes);
+
+        if (watermarkTexture.loadFromFile(watermarkPath)) {
+            hasWatermark = true;
+            std::cout << "Watermark loaded successfully" << std::endl;
+            logMessage("Watermark loaded successfully");
+        } else {
+            hasWatermark = false;
+            std::cout << "No watermark found at: " << watermarkPath << std::endl;
+            logMessage("No watermark found at: " + watermarkPath);
         }
-        
-        if (!setWallpaperFromBitmap(hBitmap)) {
-            DeleteObject(hBitmap);
-            DeleteDC(hdcMemory);
-            ReleaseDC(NULL, hdcScreen);
-            return false;
-        }
-        
-        DeleteObject(hBitmap);
-        DeleteDC(hdcMemory);
-        ReleaseDC(NULL, hdcScreen);
-        
-        return true;
     }
-    
-    bool setWallpaperFromBitmap(HBITMAP hBitmap) {
-        static std::wstring previousWallpaperPath;
-        
-        wchar_t tempPath[MAX_PATH];
-        GetTempPathW(MAX_PATH, tempPath);
-        
-        SYSTEMTIME st;
-        GetSystemTime(&st);
-        wchar_t timeStr[64];
-        swprintf_s(timeStr, L"watermarked_%04d%02d%02d_%02d%02d%02d_%03d.bmp", 
-                   st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-        std::wstring currentWallpaperPath = std::wstring(tempPath) + timeStr;
-        
-        CLSID bmpClsid;
-        GetEncoderClsid(L"image/bmp", &bmpClsid);
-        
-        Gdiplus::Bitmap bitmap(hBitmap, NULL);
-        if (bitmap.Save(currentWallpaperPath.c_str(), &bmpClsid, NULL) != Gdiplus::Ok) {
-            return false;
-        }
-        
-        bool result = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (LPVOID)currentWallpaperPath.c_str(), 0);
-        
-        if (result) {
-            Sleep(3000);
-            
-            if (!previousWallpaperPath.empty()) {
-                DeleteFileW(previousWallpaperPath.c_str());
-            }
-            cleanupOldWallpapers(currentWallpaperPath);
-            
-            previousWallpaperPath = currentWallpaperPath;
-        }
-        
-        return result;
-    }
-    
-    void cleanupOldWallpapers(const std::wstring& currentFile) {
-        wchar_t tempPath[MAX_PATH];
-        GetTempPathW(MAX_PATH, tempPath);
-        std::wstring searchPath = std::wstring(tempPath) + L"watermarked_*.bmp";
-        
-        WIN32_FIND_DATAW findData;
-        HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
-        
-        if (hFind != INVALID_HANDLE_VALUE) {
-            do {
-                std::wstring fullPath = std::wstring(tempPath) + findData.cFileName;
-                if (fullPath != currentFile) {
-                    DeleteFileW(fullPath.c_str());
+
+    void renderFrame(const Color& bgColor) {
+        sf::Color sfColor(bgColor.r, bgColor.g, bgColor.b);
+
+        // Render to all monitor windows
+        for (auto& m : monitors) {
+            if (m.window && m.window->isOpen()) {
+                m.window->clear(sfColor);
+
+                // Draw watermark if available
+                if (hasWatermark) {
+                    m.window->draw(m.watermarkSprite);
                 }
-            } while (FindNextFileW(hFind, &findData));
-            FindClose(hFind);
-        }
-    }
-    
-    int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
-        UINT num = 0;
-        UINT size = 0;
-        
-        Gdiplus::ImageCodecInfo* pImageCodecInfo = NULL;
-        
-        Gdiplus::GetImageEncodersSize(&num, &size);
-        if (size == 0) return -1;
-        
-        pImageCodecInfo = (Gdiplus::ImageCodecInfo*)(malloc(size));
-        if (pImageCodecInfo == NULL) return -1;
-        
-        Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
-        
-        for (UINT j = 0; j < num; ++j) {
-            if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
-                *pClsid = pImageCodecInfo[j].Clsid;
-                free(pImageCodecInfo);
-                return j;
+
+                m.window->display();
             }
         }
-        
-        free(pImageCodecInfo);
-        return -1;
     }
-    
-    
-    
-    
-    bool updateWallpaper() {
+
+    void updateDisplay() {
         Color currentColor = getCurrentColor();
-
-        if (!createSolidColorBitmap(currentColor)) {
-            logMessage("Failed to create watermarked wallpaper");
-            return false;
-        }
-
-        return true;
+        renderFrame(currentColor);
     }
     
     void createMessageWindow() {
@@ -1179,25 +1186,57 @@ public:
     }
 
     void run() {
+        std::cout << "\nStarting TimeWallpaper..." << std::endl;
+        std::cout << "Display will update every 15 seconds for smooth color transitions" << std::endl;
+        std::cout << "Use Task Manager to terminate the application" << std::endl << std::endl;
+
         logMessage("Starting TimeWallpaper...");
-        logMessage("Wallpaper will update every " + std::to_string(config.update_interval_minutes) + " minute(s)");
-        
+        logMessage("Display will update every 15 seconds for smooth color transitions");
+
         // Create hidden window for power management messages
         createMessageWindow();
         if (g_hWnd) {
             SetWindowLongPtr(g_hWnd, GWLP_USERDATA, (LONG_PTR)this);
+            std::cout << "Power management enabled - will update on wake from sleep" << std::endl;
             logMessage("Power management enabled - will update on wake from sleep");
         }
-        
+
         // Initial setup
-        
+        std::cout << "Fetching solar times..." << std::endl;
         fetchSolarTimes();
+        std::cout << "Generating color schedule..." << std::endl;
         generateTodaysColors();
-        
+
         int updateCount = 0;
         std::string lastDate = getCurrentDate();
-        
-        while (true) {
+        sf::Clock updateClock;
+
+        // Do initial render and set initial accent color
+        std::cout << "Rendering initial frame..." << std::endl;
+        updateDisplay();
+        updateCount++;
+
+        Color initialColor = getCurrentColor();
+        setWindowsAccentColor(initialColor);
+        lastAccentColorUpdate = time(0);
+
+        std::cout << "\nEntering main loop..." << std::endl;
+
+        bool shouldRun = true;
+        while (shouldRun) {
+            // Handle SFML events for all windows
+            for (auto& m : monitors) {
+                if (m.window && m.window->isOpen()) {
+                    sf::Event event;
+                    while (m.window->pollEvent(event)) {
+                        if (event.type == sf::Event::Closed) {
+                            shouldRun = false;
+                        }
+                        // No keyboard shortcuts - use Task Manager to terminate
+                    }
+                }
+            }
+
             // Process Windows messages for power events
             MSG msg;
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -1254,16 +1293,23 @@ public:
                     forceUpdate = true;
                 }
 
-                
-                if (updateWallpaper() || forceUpdate) {
+                // Check if it's time for periodic update (every 15 seconds)
+                if (updateClock.getElapsedTime().asSeconds() >= 15.0f) {
+                    forceUpdate = true;
+                    updateClock.restart();
+                }
+
+                // Always render, but only log on updates
+                updateDisplay();
+                if (forceUpdate) {
                     updateCount++;
-                    
+
                     if (config.debug_mode || updateCount % 1 == 0) { // Show status updates
                         time_t now = time(0);
                         tm* timeinfo = localtime(&now);
                         Color currentColor = getCurrentColor();
                         std::string period = getCurrentPeriod();
-                        
+
                         std::string statusMsg = "[" + std::to_string(updateCount) + "] "
                                                + formatHour(timeinfo->tm_hour + (timeinfo->tm_min / 60.0))
                                                + " | " + period
@@ -1271,13 +1317,22 @@ public:
                                                + std::to_string(currentColor.g) + ", "
                                                + std::to_string(currentColor.b) + ")"
                                                + " | Source: " + todaysSolarTimes.source;
-                        
+
+                        std::cout << statusMsg << std::endl;
                         logMessage(statusMsg);
                     }
                 }
-                
-                // Sleep for the specified interval
-                std::this_thread::sleep_for(std::chrono::minutes(config.update_interval_minutes));
+
+                // Check if it's time to update Windows accent color (every 30 minutes)
+                time_t now = time(0);
+                if (difftime(now, lastAccentColorUpdate) >= 1800) { // 30 minutes = 1800 seconds
+                    Color currentColor = getCurrentColor();
+                    setWindowsAccentColor(currentColor);
+                    lastAccentColorUpdate = now;
+                }
+
+                // Small sleep to prevent high CPU usage
+                std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps
                 
             } catch (const std::exception& e) {
                 std::string errorMsg = "Error in main loop: " + std::string(e.what());
@@ -1288,56 +1343,35 @@ public:
     }
 
     void logMessage(const std::string& message) {
-        // Get the directory where the executable is located
-        char exePath[MAX_PATH];
-        GetModuleFileNameA(NULL, exePath, MAX_PATH);
-        std::string exeDir = std::string(exePath);
-        size_t lastSlash = exeDir.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            exeDir = exeDir.substr(0, lastSlash + 1);
-        } else {
-            exeDir = "";
-        }
-        
-        // Go up one directory level
-        size_t parentSlash = exeDir.find_last_of("\\/", exeDir.length() - 2);
-        std::string parentDir;
-        if (parentSlash != std::string::npos) {
-            parentDir = exeDir.substr(0, parentSlash + 1);
-        } else {
-            parentDir = exeDir; // Fallback to current directory if parent not found
-        }
-        
-        std::string logPath = parentDir + "log.txt";
-        std::ofstream logFile(logPath, std::ios::app);
-        if (logFile.is_open()) {
-            time_t now = time(0);
-            tm* timeinfo = localtime(&now);
-            
-            char timestamp[100];
-            strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo);
-            
-            logFile << "[" << timestamp << "] " << message << std::endl;
-            logFile.close();
-        }
+        // Logging disabled to prevent large log files with 15-second updates
+        // Re-enable this function if debugging is needed
+        (void)message; // Suppress unused parameter warning
     }
 
 };
 
 int main(int argc, char* argv[]) {
+    // Set DPI awareness to prevent scaling issues on high-DPI displays
+    SetProcessDPIAware();
+
     TimeWallpaper app;
     
     if (argc > 1) {
         std::string mode = argv[1];
         if (mode == "--help" || mode == "-h") {
             std::cout << "\nUsage:" << std::endl;
-            std::cout << "  TimeWallpaper.exe              - Updates wallpaper colors throughout the day" << std::endl;
+            std::cout << "  TimeWallpaper.exe              - Run fullscreen color overlay based on solar position" << std::endl;
             std::cout << "  TimeWallpaper.exe --help       - Show this help" << std::endl;
             std::cout << "\nFeatures:" << std::endl;
+            std::cout << "  • Fullscreen SFML overlay (fast, no wallpaper API calls)" << std::endl;
             std::cout << "  • Automatic location detection via IP geolocation" << std::endl;
             std::cout << "  • Real astronomical data for your location" << std::endl;
+            std::cout << "  • Real-time color transitions based on sun position" << std::endl;
+            std::cout << "  • Transparent watermark support (Watermark.png)" << std::endl;
             std::cout << "  • Wake from sleep detection - updates immediately on resume" << std::endl;
             std::cout << "  • All output is logged to log.txt file" << std::endl;
+            std::cout << "\nControls:" << std::endl;
+            std::cout << "  ESC - Exit application" << std::endl;
             std::cout << "\nEdit config.ini to set manual location coordinates if needed." << std::endl;
             return 0;
         }
