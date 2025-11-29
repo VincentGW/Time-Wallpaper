@@ -1026,7 +1026,7 @@ public:
         points.push_back({evening_start + 1.25, Color(40, 35, 60), "Evening"});
         points.push_back({evening_start + 1.5, Color(35, 30, 55), "Evening"});
         points.push_back({evening_start + 1.75, Color(32, 28, 52), "Late Evening"});
-        points.push_back({evening_start + 2.25, Color(328, 22, 48), "Late Evening"});
+        points.push_back({evening_start + 2.25, Color(32, 22, 48), "Late Evening"});
         points.push_back({evening_start + 2.75, Color(22, 17, 42), "Late Evening"});
         points.push_back({evening_start + 3.25, Color(15, 12, 35), "Night"});
         points.push_back({23.99, Color(8, 8, 20), "Night"});
