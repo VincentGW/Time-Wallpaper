@@ -8,17 +8,17 @@ del TimeWallpaper.exe 2>nul
 if %ERRORLEVEL% EQU 0 (
     if exist TimeWallpaper.exe (
         echo.
-        echo ✅ SUCCESS! TimeWallpaper.exe created.
+        echo SUCCESS! TimeWallpaper.exe created.
         echo.
         echo TimeWallpaper v3.0 - Features:
-        echo   • Fullscreen SFML overlay (no slow wallpaper API calls)
-        echo   • Automatic location detection via IP geolocation
-        echo   • Real astronomical data for your location
-        echo   • Real-time color updates based on sun position
-        echo   • Transparent watermark support
-        echo   • Automatic daily solar time refresh
-        echo   • Wake-from-sleep detection
-        echo   • Configuration file with backup coordinates
+        echo   - Fullscreen SFML overlay (no slow wallpaper API calls)
+        echo   - Automatic location detection via IP geolocation
+        echo   - Real astronomical data for your location
+        echo   - Real-time color updates based on sun position
+        echo   - Transparent watermark support
+        echo   - Automatic daily solar time refresh
+        echo   - Wake-from-sleep detection
+        echo   - Configuration file with backup coordinates
         echo.
         echo Usage:
         echo   TimeWallpaper.exe       - Run fullscreen overlay
@@ -31,12 +31,14 @@ if %ERRORLEVEL% EQU 0 (
             echo.
             TimeWallpaper.exe
         )
+        goto end
     )
-) else (
-    echo.
-    echo ❌ FAILED to compile.
-    echo Make sure g++ is available and libraries are accessible.
-    echo Check errors above for details.
 )
 
+echo.
+echo FAILED to compile.
+echo Make sure g++ is available and libraries are accessible.
+echo Check errors above for details.
+
+:end
 pause
