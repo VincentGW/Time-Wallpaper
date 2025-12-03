@@ -74,6 +74,7 @@ private:
     SolarTimes todaysSolarTimes;
     SolarCache solarCache;
     std::string lastFetchDate;
+    std::string currentPeriodCache;
 
     static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
         auto* monitors = reinterpret_cast<std::vector<MonitorWindow>*>(dwData);
@@ -786,8 +787,6 @@ public:
     }
     
     void generateTodaysColors() {
-        // This method is now simplified - we calculate colors on demand
-        // rather than pre-generating discrete points
         if (config.debug_mode) {
             logMessage("Solar-based continuous color calculation initialized");
             logMessage("  Sunrise: " + formatHour(todaysSolarTimes.sunrise_hour));
@@ -822,15 +821,15 @@ public:
         for (int hour = 0; hour < 24; hour++) {
             for (int minute = 0; minute < 60; minute++) {
                 double timeHour = hour + (minute / 60.0);
-                Color color = getColorForHour(timeHour);
-                std::string period = getPeriodForHour(timeHour);
-                
+                std::string period;
+                Color color = getColorForHour(timeHour, &period);
+
                 // Format time as HH:MM
                 std::stringstream timeStr;
-                timeStr << std::setfill('0') << std::setw(2) << hour 
+                timeStr << std::setfill('0') << std::setw(2) << hour
                        << ":" << std::setw(2) << minute;
-                
-                csvFile << timeStr.str() << "," 
+
+                csvFile << timeStr.str() << ","
                        << std::fixed << std::setprecision(2) << timeHour << ","
                        << minute << ","
                        << color.r << "," << color.g << "," << color.b << ","
@@ -842,106 +841,6 @@ public:
         logMessage("Debug CSV generated: " + csvPath);
     }
     
-    std::string getPeriodForHour(double hour) {
-        double sunrise = todaysSolarTimes.sunrise_hour;
-        double sunset = todaysSolarTimes.sunset_hour;
-        double solar_noon = todaysSolarTimes.solar_noon_hour;
-        double civil_twilight_end = todaysSolarTimes.civil_twilight_end;
-        
-        // Create the same monotonic timeline for period detection
-        std::vector<ColorPoint> points;
-        
-        // Night and early morning
-        points.push_back({0.0, Color(6, 6, 8), "Deep Night"});
-        points.push_back({std::max(1.0, sunrise - 3.0), Color(10, 10, 25), "Pre-Dawn"});
-        points.push_back({std::max(2.0, sunrise - 1.5), Color(15, 15, 35), "Early Dawn"});
-        points.push_back({std::max(3.0, sunrise - 1.0), Color(35, 15, 45), "Early Dawn"});
-        points.push_back({std::max(4.0, sunrise - 0.5), Color(80, 50, 90), "Dawn"});
-        points.push_back({std::max(5.0, sunrise - 0.25), Color(120, 80, 110), "Dawn"});
-        
-        // Sunrise and morning
-        points.push_back({std::max(6.0, sunrise), Color(160, 120, 130), "Sunrise"});
-        points.push_back({std::max(7.0, sunrise + 0.25), Color(190, 150, 140), "Sunrise"});
-        points.push_back({std::max(8.0, sunrise + 0.5), Color(200, 200, 160), "Early Morning"});
-        points.push_back({std::max(9.0, sunrise + 1.0), Color(215, 220, 180), "Early Morning"});
-        points.push_back({std::max(10.0, sunrise + 2.0), Color(230, 240, 220), "Morning"});
-        
-        // Day time
-        points.push_back({std::max(11.0, solar_noon - 1.5), Color(210, 235, 200), "Late Morning"});
-        points.push_back({std::max(11.5, solar_noon - 1.0), Color(190, 220, 215), "Late Morning"});
-        points.push_back({std::max(12.0, solar_noon), Color(170, 210, 240), "Noon"});
-        points.push_back({std::max(13.0, solar_noon + 1.0), Color(170, 210, 240), "Early Afternoon"});
-        points.push_back({std::max(14.0, solar_noon + 1.5), Color(170, 210, 240), "Early Afternoon"});
-        
-        // Afternoon to sunset - ensure progressive timing
-        double late_afternoon_start = std::max(15.0, sunset - 2.0);
-        double pre_sunset_start = std::max(late_afternoon_start + 0.5, sunset - 1.0);
-        double pre_sunset_mid = std::max(pre_sunset_start + 0.25, sunset - 0.5);
-        double pre_sunset_end = std::max(pre_sunset_mid + 0.25, sunset - 0.25);
-        double sunset_time = std::max(pre_sunset_end + 0.25, sunset);
-        
-        points.push_back({late_afternoon_start, Color(170, 210, 235), "Late Afternoon"});
-        points.push_back({pre_sunset_start, Color(170, 200, 230), "Late Afternoon"});
-        points.push_back({pre_sunset_mid, Color(170, 200, 230), "Pre-Sunset"});
-        points.push_back({pre_sunset_end, Color(180, 200, 225), "Pre-Sunset"});
-        points.push_back({sunset_time, Color(220, 145, 70), "Sunset"});
-        
-        // Post-sunset to evening - ensure monotonic progression
-        double post_sunset_1 = sunset_time + 0.25;
-        double post_sunset_2 = post_sunset_1 + 0.25;
-        double post_sunset_3 = post_sunset_2 + 0.25;
-        double twilight_1 = post_sunset_3 + 0.25;
-        double twilight_2 = twilight_1 + 0.25;
-        double twilight_3 = std::max(twilight_2 + 0.25, civil_twilight_end);
-        
-        points.push_back({post_sunset_1, Color(230, 140, 70), "Sunset"});
-        points.push_back({post_sunset_2, Color(210, 120, 60), "Post-Sunset"});
-        points.push_back({post_sunset_3, Color(140, 90, 75), "Post-Sunset"});
-        points.push_back({twilight_1, Color(110, 70, 80), "Civil Twilight"});
-        points.push_back({twilight_2, Color(75, 65, 80), "Civil Twilight"});
-        points.push_back({twilight_3, Color(55, 45, 70), "Civil Twilight"});
-        
-        // Evening progression - based on twilight end
-        double evening_start = twilight_3 + 0.25;
-        points.push_back({evening_start, Color(45, 40, 60), "Evening"});
-        points.push_back({evening_start + 0.25, Color(40, 35, 50), "Evening"});
-        points.push_back({evening_start + 0.5, Color(35, 30, 45), "Evening"});
-        points.push_back({evening_start + 0.75, Color(30, 25, 35), "Evening"});
-        points.push_back({evening_start + 1.0, Color(25, 20, 35), "Evening"});
-        points.push_back({evening_start + 1.25, Color(25, 20, 30), "Evening"});
-        points.push_back({evening_start + 1.5, Color(22, 18, 25), "Evening"});
-        points.push_back({evening_start + 1.75, Color(20, 15, 25), "Late Evening"});
-        points.push_back({evening_start + 2.25, Color(15, 12, 20), "Late Evening"});
-        points.push_back({evening_start + 2.75, Color(12, 10, 18), "Late Evening"});
-        points.push_back({evening_start + 3.25, Color(10, 10, 14), "Night"});
-        points.push_back({23.99, Color(8, 8, 12), "Night"});
-        
-        // Fix times outside 0-24 range
-        for (auto& point : points) {
-            while (point.hour < 0) point.hour += 24.0;
-            while (point.hour >= 24) point.hour -= 24.0;
-        }
-        
-        // Sort points by time
-        std::sort(points.begin(), points.end(), 
-                  [](const ColorPoint& a, const ColorPoint& b) {
-                      return a.hour < b.hour;
-                  });
-        
-        // Find which period this hour falls into
-        for (size_t i = 0; i < points.size() - 1; i++) {
-            if (hour >= points[i].hour && hour <= points[i + 1].hour) {
-                return points[i].period;
-            }
-        }
-        
-        // Handle wrap-around
-        if (hour >= points.back().hour) {
-            return points.back().period;
-        }
-        
-        return points.front().period;
-    }
     
     Color getCurrentColor() {
         time_t now = time(0);
@@ -953,16 +852,16 @@ public:
     }
     
     
-    Color getColorForHour(double hour) {
+    Color getColorForHour(double hour, std::string* outPeriod = nullptr) {
         double sunrise = todaysSolarTimes.sunrise_hour;
         double sunset = todaysSolarTimes.sunset_hour;
         double solar_noon = todaysSolarTimes.solar_noon_hour;
         double civil_twilight_end = todaysSolarTimes.civil_twilight_end;
-        
+
         // Normalize hour to 0-24 range
         while (hour < 0) hour += 24.0;
         while (hour >= 24) hour -= 24.0;
-        
+
         // Create base timeline points ensuring no overlaps
         std::vector<ColorPoint> points;
         
@@ -1047,19 +946,22 @@ public:
         for (size_t i = 0; i < points.size() - 1; i++) {
             if (hour >= points[i].hour && hour <= points[i + 1].hour) {
                 double progress = (hour - points[i].hour) / (points[i + 1].hour - points[i].hour);
+                if (outPeriod) *outPeriod = points[i].period;
                 return interpolateColor(points[i].color, points[i + 1].color, progress);
             }
         }
-        
+
         // Handle wrap-around (from last point to first point)
         double lastHour = points.back().hour;
         double firstHour = points.front().hour + 24;
-        
+
         if (hour >= lastHour) {
             double progress = (hour - lastHour) / (firstHour - lastHour);
+            if (outPeriod) *outPeriod = points.back().period;
             return interpolateColor(points.back().color, points.front().color, progress);
         }
-        
+
+        if (outPeriod) *outPeriod = points.front().period;
         return points.front().color;
     }
     
@@ -1087,8 +989,10 @@ public:
         time_t now = time(0);
         tm* timeinfo = localtime(&now);
         double currentHour = timeinfo->tm_hour + (timeinfo->tm_min / 60.0);
-        
-        return getPeriodForHour(currentHour);
+
+        std::string period;
+        getColorForHour(currentHour, &period);
+        return period;
     }
     
     Color interpolateColor(Color start, Color end, double ratio) {
@@ -1137,12 +1041,68 @@ public:
     }
 
     void renderFrame(const Color& bgColor) {
-        sf::Color sfColor(bgColor.r, bgColor.g, bgColor.b);
+        // Get current time and calculate future time (1 hour ahead)
+        time_t now = time(0);
+        tm* timeinfo = localtime(&now);
+        double currentHour = timeinfo->tm_hour + (timeinfo->tm_min / 60.0) + (timeinfo->tm_sec / 3600.0);
+        double futureHour = currentHour + 1.0;
+
+        // Get colors for current and future times
+        Color bottomColor = bgColor; // Current color (already calculated)
+        Color topColor = getColorForHour(futureHour);
+
+        // 8x8 Bayer matrix for ordered dithering
+        static const int bayerMatrix[8][8] = {
+            { 0, 32,  8, 40,  2, 34, 10, 42},
+            {48, 16, 56, 24, 50, 18, 58, 26},
+            {12, 44,  4, 36, 14, 46,  6, 38},
+            {60, 28, 52, 20, 62, 30, 54, 22},
+            { 3, 35, 11, 43,  1, 33,  9, 41},
+            {51, 19, 59, 27, 49, 17, 57, 25},
+            {15, 47,  7, 39, 13, 45,  5, 37},
+            {63, 31, 55, 23, 61, 29, 53, 21}
+        };
 
         // Render to all monitor windows
         for (auto& m : monitors) {
             if (m.window && m.window->isOpen()) {
-                m.window->clear(sfColor);
+                // Create dithered gradient using per-pixel rendering
+                sf::Image gradientImage;
+                gradientImage.create(m.width, m.height);
+
+                for (int y = 0; y < m.height; y++) {
+                    // Calculate vertical progress (0.0 at bottom, 1.0 at top)
+                    double verticalProgress = 1.0 - (static_cast<double>(y) / m.height);
+
+                    // Interpolate base color at this row
+                    Color baseColor = interpolateColor(bottomColor, topColor, 1.0 - verticalProgress);
+
+                    for (int x = 0; x < m.width; x++) {
+                        // Get dither threshold from Bayer matrix (0-63)
+                        int bayerValue = bayerMatrix[y % 8][x % 8];
+                        double threshold = (bayerValue / 64.0) - 0.5; // Range: -0.5 to ~0.5
+
+                        // Apply dithering: add threshold scaled by color difference
+                        Color colorDiff;
+                        colorDiff.r = topColor.r - bottomColor.r;
+                        colorDiff.g = topColor.g - bottomColor.g;
+                        colorDiff.b = topColor.b - bottomColor.b;
+
+                        int r = std::max(0, std::min(255, baseColor.r + static_cast<int>(threshold * abs(colorDiff.r) * 0.5)));
+                        int g = std::max(0, std::min(255, baseColor.g + static_cast<int>(threshold * abs(colorDiff.g) * 0.5)));
+                        int b = std::max(0, std::min(255, baseColor.b + static_cast<int>(threshold * abs(colorDiff.b) * 0.5)));
+
+                        gradientImage.setPixel(x, y, sf::Color(r, g, b));
+                    }
+                }
+
+                // Create texture from image and draw it
+                sf::Texture gradientTexture;
+                gradientTexture.loadFromImage(gradientImage);
+                sf::Sprite gradientSprite(gradientTexture);
+
+                m.window->clear();
+                m.window->draw(gradientSprite);
 
                 // Draw watermark if available
                 if (hasWatermark) {
