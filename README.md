@@ -1,4 +1,4 @@
-# TimeWallpaper v2.0 - Solar Edition
+# TimeWallpaper
 
 TimeWallpaper automatically changes your desktop wallpaper based on real astronomical data for your location.
 
