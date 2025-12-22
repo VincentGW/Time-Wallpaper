@@ -1,4 +1,4 @@
-A fun game involving tiles and coordinates where a traveler searches for lost artifacts. Think Wind Waker meets Microsoft Excel.
+A fun game involving tiles and coordinates where a traveler searches for lost artifacts. Think Wind Waker meets Microsoft Excel bu it's 1990.
 
 
 
