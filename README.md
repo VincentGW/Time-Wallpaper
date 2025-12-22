@@ -4,7 +4,7 @@ A parallax scrolling visualizer designed to showcase scenery made of pixel art.
 
 # TimeWallpaper
 
-TimeWallpaper automatically changes your desktop wallpaper based on real astronomical data for your location.
+TimeWallpaper automatically changes your desktop wallpaper based on real astronomical data per your location.
 
 # Treasure Hunt Simulator
 
